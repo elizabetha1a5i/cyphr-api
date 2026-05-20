@@ -1,0 +1,6 @@
+flask
+flask-cors
+python-docx
+python-pptx
+openpyxl
+gunicorn
