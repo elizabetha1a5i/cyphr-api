@@ -255,10 +255,21 @@ def build_gantt(data, out):
     ws = wb.active
     client = data.get('clientName', 'CLIENT')
     project = data.get('projectName', 'PROJECT')
+    label = f'{client.upper()} — {project.upper()}'
+
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str):
-                cell.value = cell.value.replace('CLIENT', client).replace('PROJECT', project)
+                cell.value = (cell.value
+                    .replace('HP CRUSH 3.0 — PROJECT GANTT', label)
+                    .replace('HP CRUSH 3.0', client)
+                    .replace('HP Crush 3.0', client)
+                    .replace('CLIENT', client)
+                    .replace('PROJECT', project)
+                )
+
+    # Rename the sheet
+    ws.title = f'{client} Gantt'
     wb.save(out)
 
 
