@@ -1,8 +1,10 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import json, os, shutil, subprocess, re, tempfile
+import json, os, shutil, subprocess, re, tempfile, io
 from datetime import datetime
 from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import openpyxl
 
 app = Flask(__name__)
@@ -53,7 +55,141 @@ def generate():
             build_gantt(data, out)
             return send_file(out, as_attachment=True, download_name=f'{slug}_gantt.xlsx',
                            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        elif ftype == 'brief':
+            out = f'{tmp}/{slug}_brief.docx'
+            build_brief(data, out)
+            return send_file(out, as_attachment=True, download_name=f'{slug}_brief.docx',
+                           mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        elif ftype == 'brief-pdf':
+            docx_out = f'{tmp}/{slug}_brief.docx'
+            pdf_out = f'{tmp}/{slug}_brief.pdf'
+            build_brief(data, docx_out)
+            subprocess.run(
+                ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmp, docx_out],
+                capture_output=True, timeout=30
+            )
+            if not os.path.exists(pdf_out):
+                return jsonify({'error': 'PDF conversion failed — LibreOffice not available'}), 500
+            return send_file(pdf_out, as_attachment=True, download_name=f'{slug}_brief.pdf',
+                           mimetype='application/pdf')
         return jsonify({'error': 'unknown type'}), 400
+
+
+def build_brief(data, out):
+    """Build a Cyphr-branded brief Word document."""
+    doc = Document()
+
+    for section in doc.sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1.2)
+        section.right_margin = Inches(1.2)
+
+    CYPHR_GREEN = RGBColor(0x4A, 0x7C, 0x59)
+    DARK = RGBColor(0x1A, 0x1A, 0x1A)
+    MID = RGBColor(0x55, 0x55, 0x55)
+
+    client = data.get('clientName', 'CLIENT')
+    project = data.get('projectName', 'PROJECT')
+    sector = data.get('sector', '')
+    budget = data.get('budget', '0')
+    timeline = data.get('timeline', '')
+    brief_text = data.get('briefOutput', '')
+    requirements = data.get('requirements', '')
+    bg_notes = data.get('bgNotes', '')
+    today = datetime.today().strftime('%-d %B %Y')
+
+    try:
+        budget_fmt = f"£{int(float(budget)):,}"
+    except Exception:
+        budget_fmt = f"£{budget}"
+
+    # Header
+    title_p = doc.add_paragraph()
+    r = title_p.add_run('CYPHR')
+    r.bold = True; r.font.size = Pt(22); r.font.color.rgb = CYPHR_GREEN
+
+    sub_p = doc.add_paragraph()
+    r2 = sub_p.add_run(f'BRIEF — {client.upper()}')
+    r2.bold = True; r2.font.size = Pt(11); r2.font.color.rgb = MID
+    sub_p.paragraph_format.space_after = Pt(2)
+
+    if project:
+        proj_p = doc.add_paragraph()
+        r3 = proj_p.add_run(project)
+        r3.font.size = Pt(10); r3.font.color.rgb = MID
+
+    doc.add_paragraph('─' * 68)
+
+    # Meta table
+    def meta(label, value):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        lbl = p.add_run(f'{label}:  ')
+        lbl.bold = True; lbl.font.color.rgb = CYPHR_GREEN; lbl.font.size = Pt(10)
+        val = p.add_run(str(value))
+        val.font.size = Pt(10); val.font.color.rgb = DARK
+
+    meta('Client', client)
+    meta('Project', project)
+    if sector: meta('Sector', sector)
+    meta('Budget', budget_fmt)
+    if timeline: meta('Timeline', timeline)
+    meta('Date', today)
+
+    doc.add_paragraph()
+
+    # Brief body — parse sections
+    if brief_text:
+        lines = brief_text.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                doc.add_paragraph()
+                continue
+            # Detect headings: ## or **text** or ALL CAPS short lines
+            if (line.startswith('##') or
+                (line.startswith('**') and line.endswith('**')) or
+                (line.isupper() and len(line) < 60 and len(line) > 3)):
+                clean = line.lstrip('#').strip().strip('*')
+                h = doc.add_paragraph()
+                h.paragraph_format.space_before = Pt(14)
+                h.paragraph_format.space_after = Pt(4)
+                hr = h.add_run(clean)
+                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = CYPHR_GREEN
+            elif line.startswith(('• ', '- ', '* ', '· ')):
+                p = doc.add_paragraph(style='List Bullet')
+                p.add_run(line[2:].strip()).font.size = Pt(10)
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(4)
+                p.add_run(line).font.size = Pt(10)
+    else:
+        # Fallback: structured from fields
+        if requirements:
+            h = doc.add_paragraph()
+            hr = h.add_run('REQUIREMENTS')
+            hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = CYPHR_GREEN
+            for line in requirements.split('\n'):
+                if line.strip():
+                    p = doc.add_paragraph(style='List Bullet')
+                    p.add_run(line.strip().lstrip('•-* ')).font.size = Pt(10)
+        if bg_notes:
+            h2 = doc.add_paragraph()
+            hr2 = h2.add_run('BACKGROUND & CONSIDERATIONS')
+            hr2.bold = True; hr2.font.size = Pt(11); hr2.font.color.rgb = CYPHR_GREEN
+            p = doc.add_paragraph()
+            p.add_run(bg_notes).font.size = Pt(10)
+
+    doc.add_paragraph()
+
+    # Footer
+    footer_p = doc.add_paragraph()
+    footer_p.paragraph_format.space_before = Pt(24)
+    fr = footer_p.add_run(f'Prepared by Cyphr Studio  |  elizabeth@cyphr.studio  |  {today}')
+    fr.font.size = Pt(8); fr.font.color.rgb = MID
+
+    doc.save(out)
 
 
 def replace_in_doc(doc, old, new):
