@@ -1,14 +1,16 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import json, os, shutil, subprocess, re, tempfile
-from datetime import datetime, timedelta
+import json, os, re, tempfile, requests
+from datetime import datetime
 from docx import Document
-from docx.shared import Pt, RGBColor, Inches
+from docx.shared import Pt, RGBColor, Inches, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from lxml import etree
 import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+import shutil, subprocess
 
 app = Flask(__name__)
 CORS(app)
@@ -16,363 +18,348 @@ CORS(app)
 TEMPLATES_DIR = '/app/templates'
 SCRIPTS_DIR   = '/app/scripts'
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# CYPHR TEAM CONFIG
-# ───────────────────────────────────────────────────────────────────────────────
-# This is the ONLY place team names, roles and rates should come from.
-# Never invent or hardcode team members anywhere else in this file.
-# If someone joins or leaves, update it here.
+# CONFIG — single source of truth for team, rates, brand
 # ═══════════════════════════════════════════════════════════════════════════════
 
 CYPHR_TEAM = {
-    # key: what appears in the estimate template's role column
-    # name: display name — must match exactly what's in the estimate.xlsx template
-    # rate: day rate in GBP
-    # location: UK or Albania (for rate card display)
-    'strategy_rob':   {'name': 'Strategy Lead (Rob)',        'rate': 950, 'location': 'UK'},
-    'strategy_james': {'name': 'Strategy Lead (James)',      'rate': 950, 'location': 'UK'},
-    'tech_lead':      {'name': 'Tech Lead (Redian)',         'rate': 700, 'location': 'UK'},
-    'tech_lead_p2':   {'name': 'Tech Lead (Redian)',         'rate': 500, 'location': 'UK'},  # reduced phase 2 rate — matches template
-    'producer':       {'name': 'Producer (Verity)',          'rate': 500, 'location': 'UK'},
-    'qa':             {'name': 'QA',                         'rate': 450, 'location': 'UK'},
-    'support':        {'name': 'Support',                    'rate': 500, 'location': 'UK'},
-    'hosting':        {'name': 'Hosting & 3rd Party Costs',  'rate': 500, 'location': 'N/A'},
-    'dev_mid':        {'name': 'Developer (Mid)',            'rate': 200, 'location': 'Albania'},
-    'dev_senior':     {'name': 'Developer (Senior)',         'rate': 300, 'location': 'Albania'},
+    'strategy_rob':   {'name': 'Strategy Lead (Rob)',       'rate': 950},
+    'strategy_james': {'name': 'Strategy Lead (James)',     'rate': 950},
+    'tech_lead':      {'name': 'Tech Lead (Redian)',        'rate': 700},
+    'tech_lead_p2':   {'name': 'Tech Lead (Redian)',        'rate': 500},
+    'producer':       {'name': 'Producer (Verity)',         'rate': 500},
+    'qa':             {'name': 'QA',                        'rate': 450},
+    'support':        {'name': 'Support',                   'rate': 500},
+    'hosting':        {'name': 'Hosting & 3rd Party',       'rate': 500},
+    'dev_mid':        {'name': 'Developer (Mid)',           'rate': 200},
+    'dev_senior':     {'name': 'Developer (Senior)',        'rate': 300},
 }
 
-# SOW project lead — only Verity's name appears in Cyphr-signed SOWs
-CYPHR_DELIVERY_LEAD = 'Verity Smout'
+CYPHR_DELIVERY_LEAD      = 'Verity Smout'
 CYPHR_DELIVERY_LEAD_ROLE = 'Head of Production'
+CYPHR_EMAIL              = 'hello@cyphr.studio'
+CYPHR_SITE               = 'cyphr.studio'
+
+# Brand colours
+C_PURPLE  = RGBColor(0x5B, 0x4F, 0xD9)
+C_DARK    = RGBColor(0x1F, 0x1F, 0x1F)
+C_GREY    = RGBColor(0x6B, 0x72, 0x80)
+C_LIGHT   = RGBColor(0xE8, 0xE5, 0xFF)
+C_WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI CALL — model-switchable via env var
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def call_ai(prompt, max_tokens=2000):
+    """
+    Call the configured AI model. Switch by setting AI_PROVIDER env var:
+      anthropic  (default) — uses ANTHROPIC_API_KEY
+      openai               — uses OPENAI_API_KEY
+      gemini               — uses GEMINI_API_KEY
+    """
+    provider = os.environ.get('AI_PROVIDER', 'anthropic').lower()
+
+    if provider == 'openai':
+        key = os.environ.get('OPENAI_API_KEY', '')
+        res = requests.post('https://api.openai.com/v1/chat/completions',
+            headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+            json={'model': 'gpt-4o-mini', 'max_tokens': max_tokens,
+                  'messages': [{'role': 'user', 'content': prompt}]}, timeout=60)
+        res.raise_for_status()
+        return res.json()['choices'][0]['message']['content']
+
+    elif provider == 'gemini':
+        key = os.environ.get('GEMINI_API_KEY', '')
+        res = requests.post(
+            f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
+            headers={'Content-Type': 'application/json'},
+            json={'contents': [{'parts': [{'text': prompt}]}]}, timeout=60)
+        res.raise_for_status()
+        return res.json()['candidates'][0]['content']['parts'][0]['text']
+
+    else:  # anthropic (default)
+        key = os.environ.get('ANTHROPIC_API_KEY', '')
+        res = requests.post('https://api.anthropic.com/v1/messages',
+            headers={'x-api-key': key, 'anthropic-version': '2023-06-01',
+                     'Content-Type': 'application/json'},
+            json={'model': 'claude-haiku-4-5-20251001', 'max_tokens': max_tokens,
+                  'messages': [{'role': 'user', 'content': prompt}]}, timeout=60)
+        res.raise_for_status()
+        return res.json()['content'][0]['text']
+
+
+def parse_json_response(text):
+    """Strip markdown fences and parse JSON from AI response."""
+    clean = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.MULTILINE)
+    clean = re.sub(r'\s*```$', '', clean.strip(), flags=re.MULTILINE)
+    return json.loads(clean.strip())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLACEHOLDERS
-# ───────────────────────────────────────────────────────────────────────────────
-# Used wherever data is missing. Visible and searchable in every document.
-# Format is consistent so the user can Ctrl+F before sending anything.
+# PLACEHOLDER CONVENTION
+# All missing data surfaces as [CONFIRM: reason] — searchable before sending
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def PH(reason):
     return f'[CONFIRM: {reason}]'
 
-PLACEHOLDERS = {
-    'budget':           PH('budget — not yet confirmed'),
-    'timeline':         PH('timeline — not yet confirmed'),
-    'client_contact':   PH('client project lead name and email'),
-    'client_address':   PH('client registered address'),
-    'fee_detail':       PH('fee breakdown — confirm with estimate'),
-    'milestone_dates':  PH('milestone dates — confirm at kick-off'),
-    'sector':           PH('sector — verify extraction is correct'),
-    'summary':          PH('project summary — re-run context extraction'),
-}
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VALIDATION
-# ───────────────────────────────────────────────────────────────────────────────
-# Hard required fields per document type.
-# Missing = friendly HTTP 400 asking the user to provide the information.
-# Wrong/hallucinated data = checked by cross-referencing against what was sent.
+# VALIDATION + VERIFICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-REQUIRED_FIELDS = {
+REQUIRED = {
     'brief':    ['clientName', 'projectName'],
     'sow':      ['clientName', 'projectName', 'sowOutput'],
-    'proposal': ['clientName', 'projectName'],
+    'proposal': ['clientName', 'projectName', 'proposalOutput'],
     'estimate': ['clientName', 'projectName'],
     'gantt':    ['clientName', 'projectName'],
 }
 
-# Minimum character length for AI-generated fields.
-# Below this = extraction likely failed.
-MIN_LENGTH = {
-    'sowOutput':      100,
-    'briefOutput':    80,
-    'proposalOutput': 100,
-}
-
-# Human-readable explanations for each required field — shown to the user on 400
-FIELD_EXPLANATIONS = {
-    'clientName':    'the client name, so documents are addressed to the right organisation',
-    'projectName':   'the project name, so every document refers to the right engagement',
-    'sowOutput':     'the SOW content from the AI generation stage — please go back and run that step first',
-    'briefOutput':   'the brief content from the AI generation stage — please go back and run that step first',
-    'proposalOutput':'the proposal content from the AI generation stage — please go back and run that step first',
-}
-
-
 def validate(ftype, data):
+    missing = []
+    for f in REQUIRED.get(ftype, []):
+        if not str(data.get(f, '')).strip():
+            missing.append(f)
+    if missing:
+        return False, {'error': 'Missing required fields', 'fields': missing}
+    return True, []
+
+def verify_output(doc_type, content, data):
     """
-    Check required fields and AI output quality before generating.
-
-    Returns:
-        (True, warnings_list)   — ok to proceed, warnings is [] or has soft issues
-        (False, error_payload)  — missing required data, return as HTTP 400
+    Run the verifier against generated content before rendering.
+    Returns list of issues — empty means clean.
     """
-    missing_explanations = []
-    warnings = []
+    issues = []
 
-    # 1. Hard required fields
-    for field in REQUIRED_FIELDS.get(ftype, []):
-        val = str(data.get(field, '')).strip()
-        if not val:
-            explanation = FIELD_EXPLANATIONS.get(field, field)
-            missing_explanations.append(explanation)
+    # 1. Check for leftover placeholder text from previous projects
+    bleed_terms = [
+        'Blue Square', 'Charlotte Cavanagh', 'charlotte.cavanagh',
+        'Samsung Roadshow', 'Contact Centre Roadshow', 'photo booth',
+        'HP Local Heroes', 'MentorLink', 'Spotify Kids', 'Google Chromecast',
+        'AccountsPayable@bluesquare', 'Tate House, Watermark Way',
+        'lorem ipsum', 'Lorem ipsum', 'morem ipsum',
+        'Fantasy Golf', "Rick's Roll up", 'Birdie Sauce',
+    ]
+    content_str = json.dumps(content) if isinstance(content, dict) else str(content)
+    for term in bleed_terms:
+        if term.lower() in content_str.lower():
+            issues.append(f'Previous project data found: "{term}" — AI may have used template content')
 
-    # 2. AI output minimum length
-    for field, min_len in MIN_LENGTH.items():
-        val = str(data.get(field, '')).strip()
-        if val and len(val) < min_len:
-            missing_explanations.append(
-                f'the {field.replace("Output","")} content looks incomplete '
-                f'(only {len(val)} characters) — please re-run the generation step'
-            )
-
-    if missing_explanations:
-        return False, {
-            'error': 'A few things are needed before this document can be generated.',
-            'needed': missing_explanations,
-            'message': (
-                'To generate this document Cyphr Flow needs: '
-                + '; and '.join(missing_explanations) + '. '
-                'Once these are filled in, come back and try again.'
-            )
-        }
-
-    # 3. Soft warnings — these use placeholders, not hard fail
-    if not str(data.get('budget', '')).strip() or str(data.get('budget', '')).strip() in ('0', '£0'):
-        warnings.append('budget not set — document will show a placeholder')
-    if not str(data.get('timeline', '')).strip():
-        warnings.append('timeline not set — document will show a placeholder')
-
-    # 4. Hallucination / data integrity check
-    #    Cross-reference the AI outputs against the source data the user sent.
-    #    If team member names appear in AI output that aren't in CYPHR_TEAM,
-    #    flag it — the AI has likely invented someone.
-    hallucination_warnings = check_for_invented_content(data)
-    warnings.extend(hallucination_warnings)
-
-    return True, warnings
-
-
-def check_for_invented_content(data):
-    """
-    Check AI-generated text fields for content that wasn't in the source data
-    and isn't in the known Cyphr config.
-
-    Specifically:
-    - Person names that aren't in CYPHR_TEAM or the source documents
-    - Roles that aren't in CYPHR_TEAM
-    - Budget/fee figures that don't match what the user sent
-
-    Returns a list of warning strings. Empty = clean.
-    """
-    warnings = []
-
-    # Build the set of names/roles we know are legitimate
-    known_names = {v['name'].lower() for v in CYPHR_TEAM.values()}
-    known_names.add(CYPHR_DELIVERY_LEAD.lower())
-
-    # Also treat anything in the user's source documents as known
-    source_text = ' '.join(filter(None, [
-        str(data.get('briefOutput', '')),
-        str(data.get('requirements', '')),
-        str(data.get('bgNotes', '')),
-        str(data.get('clientName', '')),
-        str(data.get('projectName', '')),
+    # 2. Check for invented person names (not in team config or source data)
+    known = {v['name'].lower() for v in CYPHR_TEAM.values()}
+    known.add(CYPHR_DELIVERY_LEAD.lower())
+    source = ' '.join(filter(None, [
+        data.get('clientName',''), data.get('projectName',''),
+        data.get('requirements',''), data.get('bgNotes',''),
+        data.get('briefOutput',''), data.get('sowOutput',''),
     ])).lower()
-
-    # Check AI-generated outputs for person names not in known set or source text
-    ai_outputs = ' '.join(filter(None, [
-        str(data.get('sowOutput', '')),
-        str(data.get('proposalOutput', '')),
-        str(data.get('estimateOutput', '')),
-    ]))
-
-    # Look for patterns like "Name (Role)" or capitalised proper name pairs
-    # that might indicate an invented person
-    # Only flag two-word proper names that look like people:
-    # both words 3+ chars, neither word is a common project/doc/legal term.
-    NOT_NAMES = {
-        'project', 'phase', 'support', 'retail', 'digital', 'experience', 'summary',
-        'overview', 'assumptions', 'exclusions', 'objectives', 'milestones', 'commercial',
-        'invoice', 'submission', 'instructions', 'management', 'reporting', 'responsibilities',
-        'risks', 'conditions', 'agreement', 'contract', 'services', 'information', 'protection',
-        'rights', 'property', 'intellectual', 'confidential', 'applicable', 'termination',
-        'liability', 'indemnity', 'circumstances', 'communications', 'jurisdiction', 'severance',
-        'base', 'main', 'consulting', 'corporation', 'internet', 'social', 'media', 'security',
-        'breach', 'neither', 'party', 'effective', 'date', 'set', 'off', 'these', 'the',
-        'new', 'old', 'east', 'west', 'north', 'south', 'united', 'kingdom', 'limited',
-        'industries', 'camburgh', 'dover', 'accounts', 'payable', 'samsung', 'blue', 'square',
-        'fee', 'total', 'silver', 'bronze', 'gold', 'tour', 'lab', 'app', 'store', 'flip',
-        'fold', 'galaxy', 'build', 'launch', 'sprint', 'design', 'discovery', 'planning',
-        'change', 'request', 'log', 'risk', 'output', 'input', 'phase', 'work',
+    skip_words = {
+        'project','phase','design','build','launch','sprint','discovery',
+        'planning','review','sign','off','kick','total','fixed','price',
+        'united','kingdom','north','south','east','west','new','old',
     }
-    name_pattern = re.compile(r'\b([A-Z][a-z]{2,} [A-Z][a-z]{2,})\b')
-    found_names = set(name_pattern.findall(ai_outputs))
-
-    for name in found_names:
+    name_re = re.compile(r'\b([A-Z][a-z]{2,} [A-Z][a-z]{2,})\b')
+    for name in set(name_re.findall(content_str)):
         words = name.lower().split()
-        # Skip if either word is a known non-name term
-        if any(w in NOT_NAMES for w in words):
-            continue
-        if name.lower() in known_names:
-            continue
-        if name.lower() in source_text:
-            continue
-        warnings.append(
-            f'"{name}" appears in the AI output but wasn\'t in your source documents '
-            f'or Cyphr\'s team config — check this isn\'t an invented person or contact'
-        )
+        if any(w in skip_words for w in words): continue
+        if name.lower() in known: continue
+        if name.lower() in source: continue
+        issues.append(f'Possible invented name: "{name}" — not in team config or source data')
 
-    # Check that any fee/budget figures in the AI output aren't wildly different
-    # from what the user sent (catches AI inventing a budget)
-    raw_budget = str(data.get('budget', '')).replace('£', '').replace(',', '').strip()
-    if raw_budget and raw_budget not in ('0', ''):
+    # 3. Check budget figures don't exceed project budget
+    raw = str(data.get('budget','')).replace('£','').replace(',','').strip()
+    if raw and raw not in ('0',''):
         try:
-            user_budget = int(float(raw_budget))
-            # Find any £ amounts in AI outputs
-            fee_pattern = re.compile(r'£([\d,]+)')
-            ai_fees = [int(m.replace(',', '')) for m in fee_pattern.findall(ai_outputs)]
-            for fee in ai_fees:
-                # Only flag figures that EXCEED the total budget by more than 20%
-                # (line items in a fee breakdown are expected to be smaller than the total)
-                if user_budget > 0 and fee > user_budget * 1.2 and fee > 1000:
-                    warnings.append(
-                        f'AI output contains £{fee:,} which exceeds the project budget of '
-                        f'£{user_budget:,} — check this figure is intentional'
-                    )
-        except (ValueError, ZeroDivisionError):
-            pass
+            user_budget = int(float(raw))
+            for fee in [int(m.replace(',','')) for m in re.findall(r'£([\d,]+)', content_str)]:
+                if fee > user_budget * 1.2 and fee > 1000:
+                    issues.append(f'Fee £{fee:,} exceeds project budget £{user_budget:,} — check this figure')
+        except: pass
 
-    return warnings
+    # 4. Check required fields are actually populated in output
+    if isinstance(content, dict):
+        for key, val in content.items():
+            if isinstance(val, str) and val.strip() in ('', 'N/A', 'TBC', 'None'):
+                issues.append(f'Field "{key}" is empty in generated output — missing from context')
+
+    return issues
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SAFE FIELD GETTERS
+# DOCUMENT SPECS — what the AI receives per document type
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fmt(budget):
-    try: return f"{int(float(str(budget).replace('£','').replace(',',''))):,}"
-    except: return str(budget)
+def sow_spec(data):
+    client   = data.get('clientName', '')
+    project  = data.get('projectName', '')
+    budget   = data.get('budget', '')
+    timeline = data.get('timeline', '')
+    sow_text = data.get('sowOutput', '')
+    brief    = data.get('briefOutput', '')
+    estimate = data.get('estimateOutput', '')
+    today    = datetime.today().strftime('%-d %B %Y')
 
-def weeks(timeline):
-    m = re.search(r'(\d+)', str(timeline))
-    return int(m.group(1)) if m else 10
+    team_names = ', '.join(v['name'] for v in CYPHR_TEAM.values())
 
-def safe_budget(data):
-    raw = str(data.get('budget', '')).strip().replace('£', '').replace(',', '')
-    if not raw or raw == '0':
-        return PLACEHOLDERS['budget']
+    prompt = f"""You are generating a Statement of Work for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
+
+PROJECT DATA:
+Client: {client}
+Project: {project}
+Budget: £{budget}
+Timeline: {timeline}
+Brief: {brief[:800] if brief else 'Not provided'}
+AI SOW draft: {sow_text[:1200] if sow_text else 'Not provided'}
+Estimate: {estimate[:600] if estimate else 'Not provided'}
+Today: {today}
+
+RULES:
+- Only use names from this list for Cyphr team: {team_names}. Cyphr delivery lead is always: {CYPHR_DELIVERY_LEAD}.
+- Client contact is unknown — use exactly the string: [CONFIRM: client project lead name and email]
+- Budget: if unknown use exactly: [CONFIRM: budget not yet confirmed]
+- Milestones: derive from timeline and project type. Format as "Milestone name — Date" per line. If dates unknown use: [CONFIRM: milestone dates — confirm at kick-off]
+- Fee: state as fixed price total matching the budget. If budget is 0 use: [CONFIRM: fee — confirm with estimate]
+- Do NOT invent addresses, company numbers, or contact details
+- Keep each section focused and professional. No filler.
+
+Return this exact JSON structure:
+{{
+  "effective_date": "{today}",
+  "client": "{client}",
+  "project": "{project}",
+  "summary": "2-3 sentences describing what Cyphr will deliver and for whom",
+  "objectives": "bullet points — key project objectives and outputs",
+  "assumptions": "bullet points — what client must provide, key dependencies",
+  "responsibilities": "Cyphr responsibilities on one side, client responsibilities on the other",
+  "location": "United Kingdom",
+  "milestones": "one milestone per line as: Name — Date",
+  "fee": "fixed price fee statement with total amount",
+  "payment_terms": "invoice and payment schedule",
+  "client_contact": "[CONFIRM: client project lead name and email]",
+  "delivery_lead": "{CYPHR_DELIVERY_LEAD}",
+  "delivery_lead_role": "{CYPHR_DELIVERY_LEAD_ROLE}"
+}}"""
+    return prompt
+
+def proposal_spec(data):
+    client   = data.get('clientName', '')
+    project  = data.get('projectName', '')
+    budget   = data.get('budget', '')
+    timeline = data.get('timeline', '')
+    sector   = data.get('sector', '')
+    proposal = data.get('proposalOutput', '')
+    brief    = data.get('briefOutput', '')
+    today    = datetime.today().strftime('%-d %B %Y')
+
+    prompt = f"""You are generating a commercial proposal for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
+
+PROJECT DATA:
+Client: {client}
+Project: {project}
+Sector: {sector}
+Budget: £{budget}
+Timeline: {timeline}
+Brief: {brief[:800] if brief else 'Not provided'}
+Proposal draft: {proposal[:1000] if proposal else 'Not provided'}
+
+RULES:
+- Write as Cyphr Studio — confident, direct, no fluff
+- executive_summary: 2-3 sentences max
+- opportunity: what problem this solves for the client
+- approach: how Cyphr will tackle it — 3-4 bullet points
+- deliverables: what the client receives — specific, not vague
+- why_cyphr: 2-3 sentences on why Cyphr is the right partner for this
+- investment: fee summary with total matching budget
+- Do NOT reference Samsung, Blue Square, roadshow, or any other client
+
+Return this exact JSON:
+{{
+  "client": "{client}",
+  "project": "{project}",
+  "date": "{today}",
+  "executive_summary": "...",
+  "opportunity": "...",
+  "approach": ["bullet 1", "bullet 2", "bullet 3"],
+  "deliverables": ["deliverable 1", "deliverable 2", "deliverable 3"],
+  "why_cyphr": "...",
+  "investment": "...",
+  "timeline": "{timeline}"
+}}"""
+    return prompt
+
+def estimate_spec(data):
+    client   = data.get('clientName', '')
+    project  = data.get('projectName', '')
+    budget   = data.get('budget', '0')
+    timeline = data.get('timeline', '')
+    estimate = data.get('estimateOutput', '')
+    brief    = data.get('briefOutput', '')
+
     try:
-        val = int(float(raw))
-        return f'£{val:,}' if val > 0 else PLACEHOLDERS['budget']
+        total = int(float(str(budget).replace('£','').replace(',','')))
     except:
-        return str(data.get('budget', '')) or PLACEHOLDERS['budget']
+        total = 0
 
-def safe_summary(data, sec):
-    s = sec.get('summary', '').strip()
-    return s if len(s) > 20 else PLACEHOLDERS['summary']
+    team_list = '\n'.join(f"  {k}: {v['name']} @ £{v['rate']}/day" for k,v in CYPHR_TEAM.items())
 
-def safe_fee(data, sec):
-    fee = sec.get('fee', '').strip()
-    if not fee:
-        return PLACEHOLDERS['fee_detail']
-    if re.search(r'£\s*0\b', fee) and len(fee) < 20:
-        return PLACEHOLDERS['fee_detail']
-    # Reject if it looks like research methodology rather than a fee summary.
-    # A valid fee section should mention a price, total, or payment term.
-    # If it talks about recruitment, participants, or interviews it's the wrong section.
-    bad_signals = ['recruit', 'participant', 'interview', 'n=', 'persona', 'deliver']
-    fee_signals = ['£', 'total', 'invoice', 'payment', 'fixed price', 'fee', 'cost']
-    fee_lower = fee.lower()
-    has_fee_signal = any(s in fee_lower for s in fee_signals)
-    has_bad_signal = any(s in fee_lower for s in bad_signals)
-    if has_bad_signal and not has_fee_signal:
-        return PLACEHOLDERS['fee_detail']
-    return fee
+    prompt = f"""You are building a cost estimate for a Cyphr Studio project. Return ONLY valid JSON, no markdown.
 
-def safe_milestones(data, sec):
-    ms = sec.get('milestones', '').strip()
-    return ms if (ms and len(ms.splitlines()) >= 2) else PLACEHOLDERS['milestone_dates']
+PROJECT DATA:
+Client: {client}
+Project: {project}
+Total budget: £{total:,}
+Timeline: {timeline}
+Brief: {brief[:600] if brief else 'Not provided'}
+Estimate notes: {estimate[:600] if estimate else 'Not provided'}
 
+AVAILABLE TEAM (use ONLY these, pick what fits the project):
+{team_list}
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ROUTE
-# ═══════════════════════════════════════════════════════════════════════════════
+RULES:
+- Phases must add up to approximately £{total:,} total
+- Only include team members that make sense for this project type
+- Days must be realistic for the timeline and project type
+- Each phase has a name, list of roles with days, and subtotal
+- Use the exact rate values from the team list above — do not invent rates
+- If budget is 0, estimate based on project type and timeline
 
-@app.route('/health')
-def health():
-    return jsonify({'status': 'ok'})
-
-@app.route('/generate', methods=['POST', 'OPTIONS'])
-def generate():
-    if request.method == 'OPTIONS':
-        return '', 204
-
-    body  = request.get_json()
-    ftype = body.get('type')
-    data  = body.get('projectData', {})
-    slug  = re.sub(r'[^a-z0-9_]', '', (data.get('clientName') or 'project').lower().replace(' ', '_'))
-
-    ok, result = validate(ftype, data)
-    if not ok:
-        # Friendly 400 — tells the user exactly what's needed and why
-        return jsonify(result), 400
-
-    # Log any warnings (will appear as placeholders in the document)
-    if result:
-        print(f'[WARNINGS {ftype}/{slug}] {result}')
-
-    with tempfile.TemporaryDirectory() as tmp:
-        if ftype == 'sow':
-            out = f'{tmp}/{slug}_sow.docx'
-            build_sow(data, out)
-            return send_file(out, as_attachment=True, download_name=f'{slug}_sow.docx',
-                           mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-        elif ftype == 'proposal':
-            out = f'{tmp}/{slug}_proposal.pptx'
-            build_proposal(data, out, tmp)
-            return send_file(out, as_attachment=True, download_name=f'{slug}_proposal.pptx',
-                           mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation')
-        elif ftype == 'estimate':
-            out = f'{tmp}/{slug}_estimate.xlsx'
-            build_estimate(data, out)
-            return send_file(out, as_attachment=True, download_name=f'{slug}_estimate.xlsx',
-                           mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        elif ftype == 'gantt':
-            out = f'{tmp}/{slug}_gantt.xlsx'
-            build_gantt(data, out)
-            return send_file(out, as_attachment=True, download_name=f'{slug}_gantt.xlsx',
-                           mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        elif ftype == 'brief':
-            out = f'{tmp}/{slug}_brief.docx'
-            build_brief(data, out)
-            return send_file(out, as_attachment=True, download_name=f'{slug}_brief.docx',
-                           mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-        elif ftype == 'brief-pdf':
-            docx_out = f'{tmp}/{slug}_brief.docx'
-            pdf_out  = f'{tmp}/{slug}_brief.pdf'
-            build_brief(data, docx_out)
-            subprocess.run(
-                ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmp, docx_out],
-                capture_output=True, timeout=30
-            )
-            if not os.path.exists(pdf_out):
-                return jsonify({'error': 'PDF conversion failed — LibreOffice not available'}), 500
-            return send_file(pdf_out, as_attachment=True, download_name=f'{slug}_brief.pdf',
-                           mimetype='application/pdf')
-
-        return jsonify({'error': 'unknown type'}), 400
+Return this exact JSON:
+{{
+  "client": "{client}",
+  "project": "{project}",
+  "total_budget": {total},
+  "phases": [
+    {{
+      "name": "Phase name",
+      "roles": [
+        {{"team_key": "strategy_rob", "days": 2}},
+        {{"team_key": "producer", "days": 3}}
+      ]
+    }}
+  ],
+  "assumptions": ["assumption 1", "assumption 2"],
+  "exclusions": ["exclusion 1", "exclusion 2"]
+}}"""
+    return prompt
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# BRIEF
+# DOCUMENT BUILDERS — from JSON spec, not from templates
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_brief(data, out):
+def build_sow(data, out):
+    # 1. Generate structured content via AI
+    spec_json = call_ai(sow_spec(data), max_tokens=2000)
+    sec = parse_json_response(spec_json)
+
+    # 2. Verify before rendering
+    issues = verify_output('sow', sec, data)
+    if issues:
+        print(f'[SOW VERIFY] {issues}')
+
+    # 3. Build fresh Word document — no template dependency
     doc = Document()
     for section in doc.sections:
         section.top_margin    = Inches(1)
@@ -380,9 +367,384 @@ def build_brief(data, out):
         section.left_margin   = Inches(1.2)
         section.right_margin  = Inches(1.2)
 
-    CYPHR_GREEN = RGBColor(0x4A, 0x7C, 0x59)
-    DARK        = RGBColor(0x1A, 0x1A, 0x1A)
-    MID         = RGBColor(0x55, 0x55, 0x55)
+    today = sec.get('effective_date', datetime.today().strftime('%-d %B %Y'))
+    client = sec.get('client', data.get('clientName','CLIENT'))
+    project = sec.get('project', data.get('projectName','PROJECT'))
+
+    def heading(text):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(16)
+        p.paragraph_format.space_after  = Pt(4)
+        r = p.add_run(text)
+        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_PURPLE
+        p.add_run().add_break()
+
+    def body(text, size=10):
+        if not text: return
+        for line in str(text).strip().split('\n'):
+            line = line.strip()
+            if not line: continue
+            if line.startswith(('•','-','*')):
+                p = doc.add_paragraph(style='List Bullet')
+                p.add_run(line.lstrip('•-* ').strip()).font.size = Pt(size)
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(3)
+                p.add_run(line).font.size = Pt(size)
+
+    def rule():
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after  = Pt(2)
+        p.add_run('─' * 72).font.color.rgb = C_GREY
+
+    def kv(label, value, size=10):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        lr = p.add_run(f'{label}:  ')
+        lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_PURPLE
+        vr = p.add_run(str(value) if value else PH(label.lower()))
+        vr.font.size = Pt(size); vr.font.color.rgb = C_DARK
+
+    # Cover block
+    tp = doc.add_paragraph()
+    tp.add_run('CYPHR').font.size = Pt(22)
+    tp.runs[0].bold = True; tp.runs[0].font.color.rgb = C_PURPLE
+
+    sp = doc.add_paragraph()
+    sr = sp.add_run('Statement of Work')
+    sr.bold = True; sr.font.size = Pt(13); sr.font.color.rgb = C_DARK
+
+    rule()
+    kv('Effective date', today)
+    kv('Client',         client)
+    kv('Project',        project)
+    kv('Prepared by',    f'Cyphr Studio — {CYPHR_EMAIL}')
+    doc.add_paragraph()
+
+    # Sections
+    sections_map = [
+        ('1. Project Summary',       sec.get('summary')),
+        ('2. Objectives & Outputs',  sec.get('objectives')),
+        ('3. Assumptions',           sec.get('assumptions')),
+        ('4. Responsibilities',      sec.get('responsibilities')),
+        ('5. Location',              sec.get('location', 'United Kingdom')),
+        ('6. Project Milestones',    sec.get('milestones')),
+        ('7. Risks',                 'Cyphr will address Severity 1 issues within 24 hours. Non-blocking defects may be deferred pending prioritisation.'),
+    ]
+    for title, content in sections_map:
+        heading(title)
+        body(content)
+
+    # Commercial
+    heading('8. Commercial')
+    doc.add_paragraph()
+    kv('Fee',            sec.get('fee', PH('fee — confirm with estimate')))
+    kv('Payment terms',  sec.get('payment_terms', 'Invoiced at agreed milestones. Payment terms: 30 days from invoice date.'))
+    doc.add_paragraph()
+
+    # Signatures
+    heading('9. Signatures')
+    sig_table = doc.add_table(rows=2, cols=2)
+    sig_table.style = 'Table Grid'
+    headers = ['Signed for Cyphr Studio', f'Signed for {client}']
+    for i, h in enumerate(headers):
+        cell = sig_table.rows[0].cells[i]
+        p = cell.paragraphs[0]
+        p.add_run(h).bold = True
+
+    cyphr_cell = sig_table.rows[1].cells[0]
+    client_cell = sig_table.rows[1].cells[1]
+    for cell, lines in [
+        (cyphr_cell, [CYPHR_DELIVERY_LEAD, CYPHR_DELIVERY_LEAD_ROLE, today]),
+        (client_cell, [sec.get('client_contact', PH('client name')), PH('client role'), PH('date')]),
+    ]:
+        for line in lines:
+            p = cell.add_paragraph()
+            p.add_run(line).font.size = Pt(10)
+
+    doc.add_paragraph()
+    fp = doc.add_paragraph()
+    fp.paragraph_format.space_before = Pt(20)
+    fr = fp.add_run(f'Cyphr Studio  |  {CYPHR_EMAIL}  |  {CYPHR_SITE}  |  Confidential')
+    fr.font.size = Pt(8); fr.font.color.rgb = C_GREY
+
+    # Attach verify issues as a comment note at end if any
+    if issues:
+        doc.add_paragraph()
+        note_p = doc.add_paragraph()
+        nr = note_p.add_run('⚠ VERIFY BEFORE SENDING: ' + ' | '.join(issues))
+        nr.font.size = Pt(8); nr.font.color.rgb = RGBColor(0xCC, 0x44, 0x00)
+
+    doc.save(out)
+
+
+def build_proposal_docx(data, out):
+    # 1. Generate via AI
+    spec_json = call_ai(proposal_spec(data), max_tokens=1500)
+    sec = parse_json_response(spec_json)
+
+    issues = verify_output('proposal', sec, data)
+    if issues:
+        print(f'[PROPOSAL VERIFY] {issues}')
+
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin    = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin   = Inches(1.25)
+        section.right_margin  = Inches(1.25)
+
+    client  = sec.get('client',  data.get('clientName','CLIENT'))
+    project = sec.get('project', data.get('projectName','PROJECT'))
+    today   = sec.get('date',    datetime.today().strftime('%-d %B %Y'))
+
+    def heading(text):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(14)
+        p.paragraph_format.space_after  = Pt(4)
+        r = p.add_run(text)
+        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_PURPLE
+
+    def body(text, size=10):
+        if not text: return
+        if isinstance(text, list):
+            for item in text:
+                p = doc.add_paragraph(style='List Bullet')
+                p.add_run(str(item)).font.size = Pt(size)
+        else:
+            for line in str(text).strip().split('\n'):
+                line = line.strip()
+                if not line: continue
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(3)
+                p.add_run(line).font.size = Pt(size)
+
+    def rule():
+        p = doc.add_paragraph()
+        p.add_run('─' * 72).font.color.rgb = C_GREY
+
+    # Cover
+    tp = doc.add_paragraph()
+    tp.add_run('CYPHR').font.size = Pt(22)
+    tp.runs[0].bold = True; tp.runs[0].font.color.rgb = C_PURPLE
+
+    sp = doc.add_paragraph()
+    sr = sp.add_run(f'PROPOSAL — {client.upper()}')
+    sr.bold = True; sr.font.size = Pt(13); sr.font.color.rgb = C_DARK
+
+    pp = doc.add_paragraph()
+    pr = pp.add_run(project)
+    pr.font.size = Pt(10); pr.font.color.rgb = C_GREY
+
+    rule()
+
+    def kv(label, value):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        lr = p.add_run(f'{label}:  ')
+        lr.bold = True; lr.font.size = Pt(10); lr.font.color.rgb = C_PURPLE
+        vr = p.add_run(str(value))
+        vr.font.size = Pt(10); vr.font.color.rgb = C_DARK
+
+    kv('Prepared for', client)
+    kv('Project',      project)
+    kv('Date',         today)
+    kv('Investment',   sec.get('investment', PH('fee — confirm with estimate')))
+    kv('Timeline',     sec.get('timeline',   PH('timeline — confirm at kick-off')))
+    doc.add_paragraph()
+
+    heading('Executive Summary')
+    body(sec.get('executive_summary'))
+
+    heading('The Opportunity')
+    body(sec.get('opportunity'))
+
+    heading('Our Approach')
+    body(sec.get('approach'))
+
+    heading('What We Deliver')
+    body(sec.get('deliverables'))
+
+    heading('Why Cyphr')
+    body(sec.get('why_cyphr'))
+
+    doc.add_paragraph()
+    fp = doc.add_paragraph()
+    fp.paragraph_format.space_before = Pt(24)
+    fr = fp.add_run(f'Cyphr Studio  |  {CYPHR_EMAIL}  |  {CYPHR_SITE}  |  Confidential')
+    fr.font.size = Pt(8); fr.font.color.rgb = C_GREY
+
+    if issues:
+        doc.add_paragraph()
+        note_p = doc.add_paragraph()
+        nr = note_p.add_run('⚠ VERIFY BEFORE SENDING: ' + ' | '.join(issues))
+        nr.font.size = Pt(8); nr.font.color.rgb = RGBColor(0xCC, 0x44, 0x00)
+
+    doc.save(out)
+
+
+def build_estimate(data, out):
+    # 1. Generate phase/role breakdown via AI
+    spec_json = call_ai(estimate_spec(data), max_tokens=1500)
+    sec = parse_json_response(spec_json)
+
+    issues = verify_output('estimate', sec, data)
+    if issues:
+        print(f'[ESTIMATE VERIFY] {issues}')
+
+    client  = sec.get('client',  data.get('clientName','CLIENT'))
+    project = sec.get('project', data.get('projectName','PROJECT'))
+    today   = datetime.today().strftime('%d/%m/%Y')
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Estimate'
+
+    # Styles
+    def cell_style(cell, bold=False, bg=None, color='1F1F1F', size=10, align='left'):
+        cell.font = Font(name='Arial', size=size, bold=bold,
+                         color=color)
+        if bg:
+            cell.fill = PatternFill('solid', fgColor=bg)
+        cell.alignment = Alignment(horizontal=align, vertical='center',
+                                   wrap_text=True)
+
+    def border_all(cell, color='D1D5DB'):
+        s = Side(style='thin', color=color)
+        cell.border = Border(left=s, right=s, top=s, bottom=s)
+
+    # Header rows
+    ws.merge_cells('A1:F1')
+    ws['A1'] = f'Cyphr Studio — Cost Estimate'
+    cell_style(ws['A1'], bold=True, size=14, color='5B4FD9')
+
+    ws.merge_cells('A2:F2')
+    ws['A2'] = f'{client} / {project}  |  {today}'
+    cell_style(ws['A2'], size=10, color='6B7280')
+
+    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[2].height = 18
+
+    # Column headers row 4
+    headers = ['Phase', 'Role', 'Day Rate (£)', 'Days', 'Cost (£)', 'Notes']
+    col_widths = [22, 28, 14, 8, 12, 30]
+    for i, (h, w) in enumerate(zip(headers, col_widths), 1):
+        c = ws.cell(row=4, column=i, value=h)
+        cell_style(c, bold=True, bg='5B4FD9', color='FFFFFF', align='center')
+        border_all(c, '5B4FD9')
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Data rows
+    row = 5
+    grand_total = 0
+    phases = sec.get('phases', [])
+
+    for phase in phases:
+        phase_name = phase.get('name', 'Phase')
+        roles = phase.get('roles', [])
+        phase_total = 0
+
+        # Phase header row
+        ws.merge_cells(f'A{row}:F{row}')
+        c = ws.cell(row=row, column=1, value=phase_name)
+        cell_style(c, bold=True, bg='E8E5FF', color='5B4FD9')
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        for role_entry in roles:
+            team_key = role_entry.get('team_key', '')
+            days     = role_entry.get('days', 0)
+            team     = CYPHR_TEAM.get(team_key)
+            if not team:
+                continue
+            rate  = team['rate']
+            cost  = rate * days
+            phase_total += cost
+
+            cells_data = [phase_name, team['name'], rate, days, cost, '']
+            for col_i, val in enumerate(cells_data, 1):
+                c = ws.cell(row=row, column=col_i, value=val)
+                bg = 'F3F2FF' if (row % 2 == 0) else 'FFFFFF'
+                cell_style(c, bg=bg, align='center' if col_i > 2 else 'left')
+                border_all(c)
+                if col_i in (3, 5):
+                    c.number_format = '£#,##0'
+            ws.row_dimensions[row].height = 16
+            row += 1
+
+        # Phase subtotal
+        st_cell = ws.cell(row=row, column=4, value='Subtotal')
+        cell_style(st_cell, bold=True, align='right')
+        cost_cell = ws.cell(row=row, column=5, value=phase_total)
+        cell_style(cost_cell, bold=True, bg='E8E5FF')
+        cost_cell.number_format = '£#,##0'
+        border_all(cost_cell, '5B4FD9')
+        grand_total += phase_total
+        row += 2
+
+    # Grand total
+    ws.merge_cells(f'A{row}:D{row}')
+    tc = ws.cell(row=row, column=1, value='TOTAL')
+    cell_style(tc, bold=True, size=11, bg='5B4FD9', color='FFFFFF', align='right')
+    gc = ws.cell(row=row, column=5, value=grand_total)
+    cell_style(gc, bold=True, size=11, bg='5B4FD9', color='FFFFFF', align='center')
+    gc.number_format = '£#,##0'
+    ws.row_dimensions[row].height = 22
+    row += 2
+
+    # Assumptions
+    ws.cell(row=row, column=1, value='Assumptions').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
+    row += 1
+    for a in sec.get('assumptions', []):
+        c = ws.cell(row=row, column=1, value=f'• {a}')
+        c.font = Font(name='Arial', size=9, color='6B7280')
+        ws.merge_cells(f'A{row}:F{row}')
+        row += 1
+
+    row += 1
+    ws.cell(row=row, column=1, value='Exclusions').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
+    row += 1
+    for e in sec.get('exclusions', []):
+        c = ws.cell(row=row, column=1, value=f'• {e}')
+        c.font = Font(name='Arial', size=9, color='6B7280')
+        ws.merge_cells(f'A{row}:F{row}')
+        row += 1
+
+    # Rate card sheet
+    rc = wb.create_sheet('Rate Card')
+    rc_headers = ['Role', 'Day Rate (£)']
+    for i, h in enumerate(rc_headers, 1):
+        c = rc.cell(row=1, column=i, value=h)
+        c.font = Font(name='Arial', bold=True, color='FFFFFF', size=10)
+        c.fill = PatternFill('solid', fgColor='5B4FD9')
+    for r_i, (key, val) in enumerate(CYPHR_TEAM.items(), 2):
+        rc.cell(row=r_i, column=1, value=val['name']).font = Font(name='Arial', size=10)
+        rate_c = rc.cell(row=r_i, column=2, value=val['rate'])
+        rate_c.font = Font(name='Arial', size=10)
+        rate_c.number_format = '£#,##0'
+    rc.column_dimensions['A'].width = 30
+    rc.column_dimensions['B'].width = 14
+
+    if issues:
+        note_sheet = wb.create_sheet('⚠ Verify')
+        note_sheet['A1'] = 'Issues to check before sending:'
+        note_sheet['A1'].font = Font(name='Arial', bold=True, color='CC4400', size=11)
+        for i, issue in enumerate(issues, 2):
+            note_sheet[f'A{i}'] = f'• {issue}'
+            note_sheet[f'A{i}'].font = Font(name='Arial', size=10)
+
+    wb.save(out)
+
+
+def build_brief(data, out):
+    """Brief stays as-is — it works."""
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin    = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin   = Inches(1.2)
+        section.right_margin  = Inches(1.2)
 
     client     = data.get('clientName', 'CLIENT')
     project    = data.get('projectName', 'PROJECT')
@@ -393,508 +755,176 @@ def build_brief(data, out):
     bg_notes   = data.get('bgNotes', '')
     today      = datetime.today().strftime('%-d %B %Y')
 
-    title_p = doc.add_paragraph()
-    r = title_p.add_run('CYPHR')
-    r.bold = True; r.font.size = Pt(22); r.font.color.rgb = CYPHR_GREEN
+    tp = doc.add_paragraph()
+    r = tp.add_run('CYPHR')
+    r.bold = True; r.font.size = Pt(22); r.font.color.rgb = C_PURPLE
 
-    sub_p = doc.add_paragraph()
-    r2 = sub_p.add_run(f'BRIEF — {client.upper()}')
-    r2.bold = True; r2.font.size = Pt(11); r2.font.color.rgb = MID
+    sp = doc.add_paragraph()
+    r2 = sp.add_run(f'BRIEF — {client.upper()}')
+    r2.bold = True; r2.font.size = Pt(11); r2.font.color.rgb = C_GREY
 
     if project:
-        proj_p = doc.add_paragraph()
-        r3 = proj_p.add_run(project)
-        r3.font.size = Pt(10); r3.font.color.rgb = MID
+        pp = doc.add_paragraph()
+        r3 = pp.add_run(project)
+        r3.font.size = Pt(10); r3.font.color.rgb = C_GREY
 
     doc.add_paragraph('─' * 68)
 
-    def meta(label, value):
+    def kv(label, value):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         lbl = p.add_run(f'{label}:  ')
-        lbl.bold = True; lbl.font.color.rgb = CYPHR_GREEN; lbl.font.size = Pt(10)
+        lbl.bold = True; lbl.font.color.rgb = C_PURPLE; lbl.font.size = Pt(10)
         val = p.add_run(str(value))
-        val.font.size = Pt(10); val.font.color.rgb = DARK
+        val.font.size = Pt(10); val.font.color.rgb = C_DARK
 
-    meta('Client',   client)
-    meta('Project',  project)
-    meta('Sector',   sector   if sector   else PLACEHOLDERS['sector'])
-    meta('Budget',   safe_budget(data))
-    meta('Timeline', timeline if timeline else PLACEHOLDERS['timeline'])
-    meta('Date',     today)
+    kv('Client',   client)
+    kv('Project',  project)
+    kv('Sector',   sector   or PH('sector'))
+    kv('Budget',   f"£{int(float(str(data.get('budget','0')).replace('£','').replace(',',''))):,}" if data.get('budget') and str(data.get('budget')) not in ('0','') else PH('budget'))
+    kv('Timeline', timeline or PH('timeline'))
+    kv('Date',     today)
     doc.add_paragraph()
 
     if brief_text:
         for line in brief_text.strip().split('\n'):
             line = line.strip()
-            if not line:
-                doc.add_paragraph(); continue
-            if (line.startswith('##') or
-                (line.startswith('**') and line.endswith('**')) or
-                (line.isupper() and 3 < len(line) < 60)):
+            if not line: doc.add_paragraph(); continue
+            if line.startswith('##') or (line.startswith('**') and line.endswith('**')) or (line.isupper() and 3 < len(line) < 60):
                 clean = line.lstrip('#').strip().strip('*')
                 h = doc.add_paragraph()
                 h.paragraph_format.space_before = Pt(14)
-                h.paragraph_format.space_after  = Pt(4)
                 hr = h.add_run(clean)
-                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = CYPHR_GREEN
-            elif line.startswith(('• ', '- ', '* ', '· ')):
+                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = C_PURPLE
+            elif line.startswith(('• ','- ','* ')):
                 p = doc.add_paragraph(style='List Bullet')
                 p.add_run(line[2:].strip()).font.size = Pt(10)
             else:
                 p = doc.add_paragraph()
                 p.paragraph_format.space_after = Pt(4)
                 p.add_run(line).font.size = Pt(10)
-    else:
-        if requirements:
-            h = doc.add_paragraph()
-            h.add_run('REQUIREMENTS').bold = True
-            for line in requirements.split('\n'):
-                if line.strip():
-                    p = doc.add_paragraph(style='List Bullet')
-                    p.add_run(line.strip().lstrip('•-* ')).font.size = Pt(10)
-        if bg_notes:
-            h2 = doc.add_paragraph()
-            h2.add_run('BACKGROUND & CONSIDERATIONS').bold = True
-            doc.add_paragraph().add_run(bg_notes).font.size = Pt(10)
-
-    doc.add_paragraph()
-    footer_p = doc.add_paragraph()
-    footer_p.paragraph_format.space_before = Pt(24)
-    fr = footer_p.add_run(f'Prepared by Cyphr Studio  |  elizabeth@cyphr.studio  |  {today}')
-    fr.font.size = Pt(8); fr.font.color.rgb = MID
-    doc.save(out)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SOW HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def replace_in_doc(doc, old, new):
-    def _replace(para):
-        for run in para.runs:
-            if old in run.text:
-                run.text = run.text.replace(old, new)
-    for para in doc.paragraphs:
-        _replace(para)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.paragraphs:
-                    _replace(para)
-
-def remove_hyperlink_runs(doc, fragment):
-    WNS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    HL  = f'{{{WNS}}}hyperlink'
-    T   = f'{{{WNS}}}t'
-    def _clean(para):
-        for child in list(para._p):
-            if child.tag == HL:
-                if fragment.lower() in ''.join(t.text or '' for t in child.iter(T)).lower():
-                    para._p.remove(child)
-    for para in doc.paragraphs:
-        _clean(para)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.paragraphs:
-                    _clean(para)
-
-def set_cell(table, row_idx, text):
-    """Write text to first cell of a row AND clear all other cells in that row."""
-    if row_idx >= len(table.rows) or text is None:
-        return
-    WNS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    row = table.rows[row_idx]
-
-    # Clear ALL cells in the row — old milestone dates live in cols 1 and 2
-    for cell in row.cells:
-        tc = cell._tc
-        for p_el in tc.findall(f'{{{WNS}}}p'):
-            tc.remove(p_el)
-        # Add a blank paragraph so the cell isn't empty (required by OOXML)
-        blank = OxmlElement('w:p')
-        tc.append(blank)
-
-    # Write the new text into the first cell only
-    tc0 = row.cells[0]._tc
-    # Remove the blank we just added
-    for p_el in tc0.findall(f'{{{WNS}}}p'):
-        tc0.remove(p_el)
-    for line in str(text).split('\n'):
-        p = OxmlElement('w:p')
-        r = OxmlElement('w:r')
-        t = OxmlElement('w:t')
-        t.text = line
-        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-        r.append(t); p.append(r); tc0.append(p)
-
-def parse_sow(text):
-    """Parse AI SOW output into sections. Returns only what's actually there."""
-    s = {}
-    if not text:
-        return s
-    cur, buf = None, []
-    keys = {
-        '1.1': 'summary',      'project summary': 'summary',
-        '1.2': 'objectives',   'objectives': 'objectives',
-        '1.3': 'assumptions',  'assumptions': 'assumptions',
-        'responsibilities':    'responsibilities',
-        '4.1': 'milestones',   'milestones': 'milestones',
-        '5.1': 'fee',          'fee summary': 'fee', '3.1': 'fee',
-    }
-    for line in text.split('\n'):
-        clean = re.sub(r'^#{1,6}\s*', '', line).strip().strip('*').strip('_')
-        lo = clean.lower()
-        matched = False
-        for k, sec in keys.items():
-            if lo.startswith(k):
-                if cur and buf: s[cur] = '\n'.join(buf).strip()
-                cur, buf, matched = sec, [], True
-                break
-        if not matched and cur and clean:
-            buf.append(clean)
-    if cur and buf:
-        s[cur] = '\n'.join(buf).strip()
-    return s
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SOW
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_sow(data, out):
-    doc     = Document(f'{TEMPLATES_DIR}/sow.docx')
-    client  = data.get('clientName', 'CLIENT')
-    project = data.get('projectName', 'PROJECT')
-    timeline = data.get('timeline', '')
-    sow     = data.get('sowOutput', '')
-    today   = datetime.today().strftime('%-d %B %Y')
-
-    # Only replace Blue Square-specific strings.
-    # Do NOT replace 'Samsung' — it's the end client in the T&C boilerplate
-    # and replacing it creates nonsense like "Samsung's client, Samsung".
-    for old, new in [
-        ('Blue Square Marketing Limited', client),
-        ('Blue Square', client),
-        ('AccountsPayable@bluesquare.uk.com', f'accounts@{client.lower().replace(" ","")}.com'),
-        ('bluesquare.uk.com', f'{client.lower().replace(" ","")}.com'),
-        ('Tate House, Watermark Way, Hertford SG13 7TZ', PLACEHOLDERS['client_address']),
-        ('20th March 2026', today),
-        # FIX: also replace the 28th April signature date and the footer creation date
-        ('28th April 2026', today),
-        ('27/01/2026', today),
-        ('Samsung 2026 Q2 Contact Centre Roadshow', project),
-        ('roadshow web app and photo booth experience', project),
-        ('roadshow', 'project'),
-        ('Roadshow', 'Project'),
-    ]:
-        replace_in_doc(doc, old, new)
-
-    remove_hyperlink_runs(doc, 'Charlotte')
-    remove_hyperlink_runs(doc, 'charlotte.cavanagh')
-    replace_in_doc(doc, 'Charlotte Cavanagh', PLACEHOLDERS['client_contact'])
-
-    t   = doc.tables[0]
-    sec = parse_sow(sow)
-
-    rmap = {
-        3:  safe_summary(data, sec),
-        5:  sec.get('objectives',
-                f'Deliver {project} for {client} on time and within agreed budget.'),
-        7:  sec.get('assumptions',
-                f'Client to provide all required content and access within agreed timelines.\n'
-                f'All third-party integrations and API access to be arranged by {client} prior to kick-off.'),
-        9:  sec.get('responsibilities',
-                f'Cyphr: design, build and delivery.\n'
-                f'{client}: content provision, stakeholder sign-off and UAT feedback.'),
-        11: 'United Kingdom',
-        15: (f'Cyphr will meet with the {client} team regularly to discuss requirements and progress. '
-             f'Weekly status updates will be provided throughout the project.'),
-        # Delivery lead comes from config, not invented
-        17: f'Cyphr: {CYPHR_DELIVERY_LEAD}\n{client}: {PLACEHOLDERS["client_contact"]}',
-        19: ('Cyphr will provide regular project updates during delivery. '
-             'A shared project tracker will be maintained throughout.'),
-        21: safe_milestones(data, sec),
-        23: 'Cyphr will address critical issues within 24 hours. All bugs tracked within agreed SLAs.',
-        26: safe_fee(data, sec),
-        28: 'Invoiced at project milestones. Payment terms: 30 days from invoice date.',
-        30: f'Invoice to: Accounts Payable | {client}',
-        32: 'Change requests require written approval before work commences.',
-        # Row 36 = signature date line — overwrite with today's date
-        36: today,
-    }
-    for ri, txt in rmap.items():
-        set_cell(t, ri, txt)
-
-    doc.save(out)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PROPOSAL
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_proposal(data, out, tmp):
-    client   = data.get('clientName', 'CLIENT').upper()
-    project  = data.get('projectName', 'PROJECT')
-    timeline = data.get('timeline', '') or PLACEHOLDERS['timeline']
-    proposal = data.get('proposalOutput', '')
-    brief    = data.get('briefOutput', '')
-
-    work = f'{tmp}/pwork/'
-    result = subprocess.run(
-        ['python3', f'{SCRIPTS_DIR}/unpack.py', f'{TEMPLATES_DIR}/proposal.pptx', work],
-        capture_output=True, text=True, cwd=SCRIPTS_DIR
-    )
-    if result.returncode != 0:
-        raise Exception(f'Unpack failed: {result.stderr}')
-
-    slides = f'{work}ppt/slides/'
-    paras  = [p.strip() for p in (proposal or brief or '').split('\n\n') if p.strip()]
-    exec_sum = paras[0][:400] if paras else PH('executive summary — re-run proposal stage')
-    the_ask  = paras[1][:300] if len(paras) > 1 else PH('project ask — re-run proposal stage')
-
-    replacements = {
-        'slide1.xml': [('CLIENT', client), ('PROJECT NAME', project.upper()), ('Cost Estimate ', 'Commercial Proposal ')],
-        'slide2.xml': [('This proposal outlines….', exec_sum)],
-        'slide3.xml': [('Activity Overview….', the_ask)],
-        'slide8.xml': [
-            ('Core Roadshow Experience Web App Design &amp; Build', project),
-            ('Core Roadshow Experience Web App Design & Build', project),
-            ('£25,314', safe_budget(data)),
-            ('£10,614', ''),
-            ('2 weeks + Tour duration adhoc support', timeline),
-        ],
-    }
-    for fname, repls in replacements.items():
-        path = f'{slides}{fname}'
-        if os.path.exists(path):
-            c = open(path, encoding='utf-8').read()
-            for old, new in repls: c = c.replace(old, new)
-            open(path, 'w', encoding='utf-8').write(c)
-
-    for i in range(1, 10):
-        path = f'{slides}slide{i}.xml'
-        if os.path.exists(path):
-            c = open(path, encoding='utf-8').read()
-            c = c.replace('CYPHR X BLUE SQUARE', f'CYPHR X {client}')
-            c = c.replace('CYPHR \nX BLUE SQUARE', f'CYPHR X {client}')
-            c = c.replace('PRESENTATION', 'PROPOSAL')
-            open(path, 'w', encoding='utf-8').write(c)
-
-    subprocess.run(['python3', f'{SCRIPTS_DIR}/clean.py', work], capture_output=True, cwd=SCRIPTS_DIR)
-    result2 = subprocess.run(
-        ['python3', f'{SCRIPTS_DIR}/pack.py', work, out, '--original', f'{TEMPLATES_DIR}/proposal.pptx'],
-        capture_output=True, text=True, cwd=SCRIPTS_DIR
-    )
-    if not os.path.exists(out):
-        raise Exception(f'Pack failed: {result2.stderr}')
-
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PROPOSAL (.docx) — Word version alongside the .pptx
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_proposal_docx(data, out):
-    """Generate a Word proposal document from the AI-produced proposalOutput."""
-    from docx.oxml import OxmlElement
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin    = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin   = Inches(1.25)
-        section.right_margin  = Inches(1.25)
-
-    CYPHR_GREEN = RGBColor(0x4A, 0x7C, 0x59)
-    DARK        = RGBColor(0x1A, 0x1A, 0x1A)
-    MID         = RGBColor(0x55, 0x55, 0x55)
-
-    client   = data.get('clientName', 'CLIENT')
-    project  = data.get('projectName', 'PROJECT')
-    proposal = data.get('proposalOutput', '')
-    brief    = data.get('briefOutput', '')
-    today    = datetime.today().strftime('%-d %B %Y')
-
-    # Header
-    title_p = doc.add_paragraph()
-    title_p.add_run('CYPHR').font.size = Pt(22)
-    title_p.runs[0].bold = True
-    title_p.runs[0].font.color.rgb = CYPHR_GREEN
-
-    sub_p = doc.add_paragraph()
-    r = sub_p.add_run(f'PROPOSAL — {client.upper()}')
-    r.bold = True; r.font.size = Pt(11); r.font.color.rgb = MID
-
-    proj_p = doc.add_paragraph()
-    r2 = proj_p.add_run(project)
-    r2.font.size = Pt(10); r2.font.color.rgb = MID
-
-    doc.add_paragraph('─' * 68)
-
-    def meta(label, value):
-        p = doc.add_paragraph()
-        p.paragraph_format.space_after = Pt(2)
-        lbl = p.add_run(f'{label}:  ')
-        lbl.bold = True; lbl.font.color.rgb = CYPHR_GREEN; lbl.font.size = Pt(10)
-        val = p.add_run(str(value))
-        val.font.size = Pt(10); val.font.color.rgb = DARK
-
-    meta('Prepared for', client)
-    meta('Project',      project)
-    meta('Budget',       safe_budget(data))
-    meta('Timeline',     data.get('timeline', '') or PLACEHOLDERS['timeline'])
-    meta('Date',         today)
-    doc.add_paragraph()
-
-    # Body — use proposalOutput if available, fall back to briefOutput
-    body_text = proposal or brief or ''
-    if body_text:
-        for line in body_text.strip().split('\n'):
-            line = line.strip()
-            if not line:
-                doc.add_paragraph(); continue
-            if (line.startswith('##') or
-                (line.startswith('**') and line.endswith('**')) or
-                (line.isupper() and 3 < len(line) < 60)):
-                clean = line.lstrip('#').strip().strip('*')
-                h = doc.add_paragraph()
-                h.paragraph_format.space_before = Pt(14)
-                h.paragraph_format.space_after  = Pt(4)
-                hr = h.add_run(clean)
-                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = CYPHR_GREEN
-            elif line.startswith(('• ', '- ', '* ', '· ')):
+    elif requirements:
+        h = doc.add_paragraph()
+        h.add_run('REQUIREMENTS').bold = True
+        for line in requirements.split('\n'):
+            if line.strip():
                 p = doc.add_paragraph(style='List Bullet')
-                p.add_run(line[2:].strip()).font.size = Pt(10)
-            else:
-                p = doc.add_paragraph()
-                p.paragraph_format.space_after = Pt(4)
-                p.add_run(line).font.size = Pt(10)
-    else:
-        doc.add_paragraph().add_run(
-            PLACEHOLDERS['summary']
-        ).font.size = Pt(10)
+                p.add_run(line.strip().lstrip('•-* ')).font.size = Pt(10)
 
     doc.add_paragraph()
-    footer_p = doc.add_paragraph()
-    footer_p.paragraph_format.space_before = Pt(24)
-    fr = footer_p.add_run(
-        f'Prepared by Cyphr Studio  |  elizabeth@cyphr.studio  |  {today}\n'
-        f'Confidential. Not for distribution.'
-    )
-    fr.font.size = Pt(8); fr.font.color.rgb = MID
+    fp = doc.add_paragraph()
+    fp.paragraph_format.space_before = Pt(24)
+    fr = fp.add_run(f'Prepared by Cyphr Studio  |  {CYPHR_EMAIL}  |  {today}')
+    fr.font.size = Pt(8); fr.font.color.rgb = C_GREY
     doc.save(out)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ESTIMATE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_estimate(data, out):
-    shutil.copy(f'{TEMPLATES_DIR}/estimate.xlsx', out)
-    wb = openpyxl.load_workbook(out)
-    ws = wb['TEMPLATE']
-    client  = data.get('clientName', 'CLIENT')
-    project = data.get('projectName', 'PROJECT')
-    today   = datetime.today().strftime('%d/%m/%Y')
-
-    # Update header strings
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.value and isinstance(cell.value, str):
-                if 'Cyphr Cost Estimate' in cell.value:
-                    cell.value = f'Cyphr Cost Estimate — {client} / {project}'
-                cell.value = (cell.value
-                    .replace('CLIENT_NAME', client).replace('PROJECT_NAME', project)
-                    .replace('CLIENT NAME', client).replace('PROJECT NAME', project))
-
-    ws['G1'] = f'{client} / {project}'
-    ws['G2'] = f'Date: {today}'
-
-    # Write rate/days from CYPHR_TEAM config — not hardcoded names, not invented roles.
-    # Row mapping matches the estimate.xlsx template structure exactly.
-    # If you change the template, update these row numbers to match.
-    team = CYPHR_TEAM
-    # Row mapping verified against the actual estimate.xlsx template
-    phase1_rows = {
-        6:  ('strategy_rob',   0.5),   # Strategy Lead (Rob)     rate 950
-        7:  ('strategy_james', 0.5),   # Strategy Lead (James)   rate 950
-        8:  ('tech_lead',      0),     # Tech Lead (Redian)      rate 700
-        9:  ('producer',       0.5),   # Producer (Verity)       rate 500
-    }
-    phase2_rows = {
-        22: ('strategy_rob',   0),     # Strategy Lead (Rob)     rate 950
-        23: ('strategy_james', 1),     # Strategy Lead (James)   rate 950
-        24: ('producer',       2),     # Producer (Verity)       rate 500
-        25: ('tech_lead_p2',   10),    # Tech Lead (Redian)      rate 500 (phase 2 rate — matches template)
-        26: ('dev_mid',        0),     # Developer (Mid)         rate 200
-        27: ('qa',             1),     # QA                      rate 450
-        28: ('support',        1),     # Support                 rate 500
-        29: ('hosting',        1),     # Hosting & 3rd Party     rate 500
-    }
-    for row_num, (team_key, default_days) in {**phase1_rows, **phase2_rows}.items():
-        if team_key in team:
-            rate = team[team_key]['rate']
-            ws[f'C{row_num}'] = rate
-            ws[f'D{row_num}'] = default_days
-            # Preserve the template formula pattern (=Cx*Dx) rather than inventing new ones
-            ws[f'E{row_num}'] = f'=C{row_num}*D{row_num}'
-            ws[f'F{row_num}'] = f'=E{row_num}/(1-$O$5)'
-
-    # Clear the Timings + Deliverables sheet — it contains old project data
-    # from whatever project was used to build the template
-    for sheet_name in wb.sheetnames:
-        if 'timing' in sheet_name.lower() or 'deliverable' in sheet_name.lower():
-            ws_clear = wb[sheet_name]
-            for row in ws_clear.iter_rows():
-                for cell in row:
-                    cell.value = None
-
-    wb.save(out)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GANTT
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def build_gantt(data, out):
+    """Gantt stays as-is — it works. Just clear old data properly."""
     shutil.copy(f'{TEMPLATES_DIR}/gantt.xlsx', out)
     wb    = openpyxl.load_workbook(out)
     client  = data.get('clientName', 'CLIENT')
     project = data.get('projectName', 'PROJECT')
     label   = f'{client.upper()} — {project.upper()}'
-
     today = datetime.today()
+    from datetime import timedelta
     days_ahead = (7 - today.weekday()) % 7 or 7
     week_start = today + timedelta(days=days_ahead)
 
     for ws in wb.worksheets:
-        # Clear Decision Log — never leave previous project data in it
         if 'decision' in ws.title.lower() or 'log' in ws.title.lower():
             for ri in range(2, ws.max_row + 1):
                 for ci in range(1, ws.max_column + 1):
                     ws.cell(ri, ci).value = None
             continue
-
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value and isinstance(cell.value, str):
                     cell.value = (cell.value
                         .replace('HP CRUSH 3.0 — PROJECT GANTT', label)
-                        .replace('SAMSUNG — SAMSUNG EXPERIENTIAL MARKETING CAMPAIGN', label)
                         .replace('HP CRUSH 3.0', client.upper())
                         .replace('HP Crush 3.0', client)
                         .replace('CLIENT', client)
-                        .replace('PROJECT', project)
-                    )
+                        .replace('PROJECT', project))
                     m = re.match(r'^W(\d+):', str(cell.value))
                     if m:
                         wn = int(m.group(1))
-                        wdate = week_start + timedelta(weeks=wn - 1)
+                        wdate = week_start + timedelta(weeks=wn-1)
                         cell.value = f'W{wn}: {wdate.strftime("%d %b")}'
-
         ws.title = f'{client} Gantt'
-
     wb.save(out)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'provider': os.environ.get('AI_PROVIDER','anthropic')})
+
+@app.route('/generate', methods=['POST','OPTIONS'])
+def generate():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    body  = request.get_json()
+    ftype = body.get('type')
+    data  = body.get('projectData', {})
+    slug  = re.sub(r'[^a-z0-9_]', '', (data.get('clientName') or 'project').lower().replace(' ','_'))
+
+    ok, result = validate(ftype, data)
+    if not ok:
+        return jsonify(result), 400
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            if ftype == 'sow':
+                out = f'{tmp}/{slug}_sow.docx'
+                build_sow(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_sow.docx',
+                               mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+            elif ftype in ('proposal', 'proposal-docx'):
+                out = f'{tmp}/{slug}_proposal.docx'
+                build_proposal_docx(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_proposal.docx',
+                               mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+            elif ftype == 'estimate':
+                out = f'{tmp}/{slug}_estimate.xlsx'
+                build_estimate(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_estimate.xlsx',
+                               mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+            elif ftype == 'gantt':
+                out = f'{tmp}/{slug}_gantt.xlsx'
+                build_gantt(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_gantt.xlsx',
+                               mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+            elif ftype == 'brief':
+                out = f'{tmp}/{slug}_brief.docx'
+                build_brief(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_brief.docx',
+                               mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+            elif ftype == 'brief-pdf':
+                docx_out = f'{tmp}/{slug}_brief.docx'
+                pdf_out  = f'{tmp}/{slug}_brief.pdf'
+                build_brief(data, docx_out)
+                subprocess.run(['libreoffice','--headless','--convert-to','pdf','--outdir',tmp,docx_out],
+                               capture_output=True, timeout=30)
+                if not os.path.exists(pdf_out):
+                    return jsonify({'error': 'PDF conversion failed'}), 500
+                return send_file(pdf_out, as_attachment=True, download_name=f'{slug}_brief.pdf',
+                               mimetype='application/pdf')
+
+            return jsonify({'error': 'unknown type'}), 400
+
+        except Exception as e:
+            print(f'[ERROR {ftype}] {e}')
+            return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
