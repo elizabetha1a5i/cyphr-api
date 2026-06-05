@@ -150,6 +150,8 @@ def verify_output(doc_type, content, data):
     # 2. Check for invented person names (not in team config or source data)
     known = {v['name'].lower() for v in CYPHR_TEAM.values()}
     known.add(CYPHR_DELIVERY_LEAD.lower())
+    known.add('cyphr studio')
+    known.add('cyphr')
     source = ' '.join(filter(None, [
         data.get('clientName',''), data.get('projectName',''),
         data.get('requirements',''), data.get('bgNotes',''),
@@ -318,13 +320,14 @@ def estimate_spec(data):
         total = 0
 
     team_list = '\n'.join(f"  {k}: {v['name']} @ £{v['rate']}/day" for k,v in CYPHR_TEAM.items())
+    pro_bono = total == 0
 
     prompt = f"""You are building a cost estimate for a Cyphr Studio project. Return ONLY valid JSON, no markdown.
 
 PROJECT DATA:
 Client: {client}
 Project: {project}
-Total budget: £{total:,}
+{'Budget: £0 — this is a pro-bono or grant-funded project' if pro_bono else f'Total budget: £{total:,}'}
 Timeline: {timeline}
 Brief: {brief[:600] if brief else 'Not provided'}
 Estimate notes: {estimate[:600] if estimate else 'Not provided'}
@@ -333,18 +336,19 @@ AVAILABLE TEAM (use ONLY these, pick what fits the project):
 {team_list}
 
 RULES:
-- Phases must add up to approximately £{total:,} total
-- Only include team members that make sense for this project type
+- ALWAYS estimate realistic days for each role — even if budget is £0
+- If budget is £0, label the estimate as indicative pro-bono contribution — do NOT set days to 0
 - Days must be realistic for the timeline and project type
-- Each phase has a name, list of roles with days, and subtotal
-- Use the exact rate values from the team list above — do not invent rates
-- If budget is 0, estimate based on project type and timeline
+- {'Phases show indicative effort — actual billing is £0 as pro-bono/grant-funded' if pro_bono else f'Phases must add up to approximately £{total:,} total'}
+- Only include team members that make sense for this project type
+- Use the exact rate values from the team list — do not invent rates
 
 Return this exact JSON:
 {{
   "client": "{client}",
   "project": "{project}",
   "total_budget": {total},
+  "pro_bono": {'true' if pro_bono else 'false'},
   "phases": [
     {{
       "name": "Phase name",
@@ -635,6 +639,7 @@ def build_estimate(data, out):
     client  = sec.get('client',  data.get('clientName','CLIENT'))
     project = sec.get('project', data.get('projectName','PROJECT'))
     today   = datetime.today().strftime('%d/%m/%Y')
+    pro_bono = sec.get('pro_bono', False)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -655,7 +660,7 @@ def build_estimate(data, out):
 
     # Header rows
     ws.merge_cells('A1:F1')
-    ws['A1'] = f'Cyphr Studio — Cost Estimate'
+    ws['A1'] = f'Cyphr Studio — Cost Estimate{"  |  Indicative pro-bono contribution — £0 direct fee" if pro_bono else ""}'
     cell_style(ws['A1'], bold=True, size=14, color='5B4FD9')
 
     ws.merge_cells('A2:F2')
@@ -941,7 +946,7 @@ Rules:
         except Exception:
             pass
 
-    # 5. Clear existing task rows (rows 4 onward) safely
+    # 5. Clear ALL existing task/section rows (rows 4 onward) safely
     merged = set()
     for mr in ws.merged_cells.ranges:
         for rt in mr.cells:
@@ -963,10 +968,9 @@ Rules:
         except Exception:
             pass
 
-    for r in range(4, min(ws.max_row + 1, 80)):
-        for c in range(1, min(ws.max_column + 1, 7)):
-            safe_write(r, c, None)
-        for c in range(7, min(ws.max_column + 1, len(week_cols) + 7)):
+    max_data_row = min(ws.max_row + 1, 120)
+    for r in range(4, max_data_row):
+        for c in range(1, min(ws.max_column + 1, len(week_cols) + 7)):
             safe_write(r, c, None)
 
     # 6. Write project-specific phases and tasks
