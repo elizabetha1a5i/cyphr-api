@@ -169,6 +169,16 @@ def verify_output(doc_type, content, data):
         'psychographic','scoping','grant','award','portal','platform',
         'output','report','draft','data','brief','milestone','task',
         'feature','demo','approval','approved','handoff','submission',
+        # Additional milestone/task vocabulary still getting flagged
+        'stakeholder','engagement','trainer','resources','implementation',
+        'guides','qualitative','synthesis','alignment','handover','resource',
+        'iteration','iterative','deployment','documentation','communication',
+        'strategy','strategic','operational','technical','functional',
+        'workshop','workshops','session','sessions','onboarding','kickoff',
+        'materials','material','package','packages','module','modules',
+        'impact','outcomes','indicators','metrics','assessment','review',
+        'dissemination','publication','policy','governance','compliance',
+        'infrastructure','architecture','prototype','alpha','beta',
     }
     # Only flag two-word capitalised patterns that look like real person names
     # — must not contain any skip word, must not be all common nouns
@@ -220,6 +230,20 @@ def sow_spec(data):
 
     team_names = ', '.join(v['name'] for v in CYPHR_TEAM.values())
 
+    # Try to extract a total figure from the estimate output
+    estimate_total = ''
+    if estimate:
+        total_matches = re.findall(r'(?:TOTAL|total)[^\d£]*£?([\d,]+)', estimate)
+        if total_matches:
+            estimate_total = f'£{total_matches[-1]}'
+
+    fee_instruction = (
+        f'Use this fee from the estimate: {estimate_total} (indicative pro-bono contribution — no direct commercial fee)'
+        if estimate_total and (not budget or budget == '0')
+        else f'Fee: £{budget}' if budget and budget != '0'
+        else 'Fee is unknown — use exactly: [CONFIRM: fee — confirm with estimate]'
+    )
+
     prompt = f"""You are generating a Statement of Work for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
 
 PROJECT DATA:
@@ -237,7 +261,7 @@ RULES:
 - Client contact is unknown — use exactly the string: [CONFIRM: client project lead name and email]
 - Budget: if unknown use exactly: [CONFIRM: budget not yet confirmed]
 - Milestones: derive from timeline and project type. Format as "Milestone name — Date" per line. If dates unknown use: [CONFIRM: milestone dates — confirm at kick-off]
-- Fee: state as fixed price total matching the budget. If budget is 0 use: [CONFIRM: fee — confirm with estimate]
+- Fee instruction: {fee_instruction}
 - Do NOT invent addresses, company numbers, or contact details
 - Keep each section focused and professional. No filler.
 
@@ -337,11 +361,14 @@ AVAILABLE TEAM (use ONLY these, pick what fits the project):
 
 RULES:
 - ALWAYS estimate realistic days for each role — even if budget is £0
-- If budget is £0, label the estimate as indicative pro-bono contribution — do NOT set days to 0
+- If budget is £0, label as indicative pro-bono contribution — do NOT set days to 0
 - Days must be realistic for the timeline and project type
 - {'Phases show indicative effort — actual billing is £0 as pro-bono/grant-funded' if pro_bono else f'Phases must add up to approximately £{total:,} total'}
 - Only include team members that make sense for this project type
 - Use the exact rate values from the team list — do not invent rates
+- For each role, set "source" to one of:
+    "context" — days derived from explicit information in the brief/transcript/notes
+    "estimated" — days are your best professional estimate, not stated in source material
 
 Return this exact JSON:
 {{
@@ -353,8 +380,8 @@ Return this exact JSON:
     {{
       "name": "Phase name",
       "roles": [
-        {{"team_key": "strategy_rob", "days": 2}},
-        {{"team_key": "producer", "days": 3}}
+        {{"team_key": "strategy_rob", "days": 2, "source": "context"}},
+        {{"team_key": "producer", "days": 3, "source": "estimated"}}
       ]
     }}
   ],
@@ -699,6 +726,7 @@ def build_estimate(data, out):
         for role_entry in roles:
             team_key = role_entry.get('team_key', '')
             days     = role_entry.get('days', 0)
+            source   = role_entry.get('source', 'estimated')  # 'context' or 'estimated'
             team     = CYPHR_TEAM.get(team_key)
             if not team:
                 continue
@@ -706,14 +734,23 @@ def build_estimate(data, out):
             cost  = rate * days
             phase_total += cost
 
-            cells_data = [phase_name, team['name'], rate, days, cost, '']
+            # Subtle visual: estimated rows use a slightly warmer tint
+            is_estimated = source != 'context'
+            row_bg = 'FFF8F0' if is_estimated else ('F3F2FF' if (row % 2 == 0) else 'FFFFFF')
+            note_text = '~ AI estimate' if is_estimated else '✓ From context'
+            note_color = 'B45309' if is_estimated else '065F46'
+
+            cells_data = [phase_name, team['name'], rate, days, cost, note_text]
             for col_i, val in enumerate(cells_data, 1):
                 c = ws.cell(row=row, column=col_i, value=val)
-                bg = 'F3F2FF' if (row % 2 == 0) else 'FFFFFF'
-                cell_style(c, bg=bg, align='center' if col_i > 2 else 'left')
+                cell_style(c, bg=row_bg, align='center' if col_i > 2 else 'left')
                 border_all(c)
                 if col_i in (3, 5):
                     c.number_format = '£#,##0'
+                if col_i == 6:
+                    c.font = Font(name='Arial', size=9, italic=True,
+                                  color=note_color)
+                    c.alignment = Alignment(horizontal='left', vertical='center')
             ws.row_dimensions[row].height = 16
             row += 1
 
@@ -752,6 +789,20 @@ def build_estimate(data, out):
     for e in sec.get('exclusions', []):
         c = ws.cell(row=row, column=1, value=f'• {e}')
         c.font = Font(name='Arial', size=9, color='6B7280')
+        ws.merge_cells(f'A{row}:F{row}')
+        row += 1
+
+    # Legend
+    row += 1
+    ws.cell(row=row, column=1, value='Notes legend').font = Font(name='Arial', bold=True, size=9, color='6B7280')
+    row += 1
+    for legend_bg, legend_color, legend_text in [
+        ('F3F2FF', '5B4FD9', '✓ From context — days derived from brief, transcript, or source material'),
+        ('FFF8F0', 'B45309', '~ AI estimate — days are a professional estimate, not explicitly stated in source material'),
+    ]:
+        c = ws.cell(row=row, column=1, value=legend_text)
+        c.font = Font(name='Arial', size=9, italic=True, color=legend_color)
+        c.fill = PatternFill('solid', fgColor=legend_bg)
         ws.merge_cells(f'A{row}:F{row}')
         row += 1
 
