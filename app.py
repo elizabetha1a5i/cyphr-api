@@ -287,9 +287,12 @@ Return this exact JSON structure:
   "client": "{client}",
   "project": "{project}",
   "summary": "2-3 sentences describing what Cyphr will deliver and for whom",
-  "objectives": "bullet points — key project objectives and outputs",
-  "assumptions": "bullet points — what client must provide, key dependencies",
-  "responsibilities": "Cyphr responsibilities on one side, client responsibilities on the other",
+  "objectives": ["objective 1", "objective 2", "objective 3"],
+  "assumptions": ["assumption 1", "assumption 2"],
+  "responsibilities": {{
+    "Cyphr": ["Cyphr responsibility 1", "Cyphr responsibility 2"],
+    "{client}": ["Client responsibility 1", "Client responsibility 2"]
+  }},
   "location": "United Kingdom",
   "milestones": "one milestone per line as: Name — Date",
   "fee": "fixed price fee statement with total amount",
@@ -1014,14 +1017,21 @@ Rules:
             pass
 
     # 5. Clear ALL existing task/section rows (rows 4 onward) safely
-    merged = set()
-    for mr in ws.merged_cells.ranges:
-        for rt in mr.cells:
-            merged.add((rt[0], rt[1]))
+    # First unmerge any merged cells in the data area so nothing gets skipped
+    ranges_to_remove = []
+    for mr in list(ws.merged_cells.ranges):
+        # Only unmerge rows in the data area (row 4+)
+        if mr.min_row >= 4:
+            ranges_to_remove.append(str(mr))
+    for r in ranges_to_remove:
+        try:
+            ws.unmerge_cells(r)
+        except Exception:
+            pass
+
+    merged = set()  # now empty for data rows — all unmerged
 
     def safe_write(r, c, val, bold=False, bg=None, color=None):
-        if (r, c) in merged:
-            return
         try:
             cell = ws.cell(row=r, column=c)
             cell.value = val
@@ -1041,6 +1051,7 @@ Rules:
             safe_write(r, c, None)
 
     # 6. Write project-specific phases and tasks
+    # First unmerge any merged cells in data area to allow full overwrite
     row = 4
     for phase_idx, phase in enumerate(phases):
         phase_name = phase.get('name', f'Phase {phase_idx + 1}')
