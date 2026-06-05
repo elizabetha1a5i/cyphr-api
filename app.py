@@ -191,7 +191,15 @@ def verify_output(doc_type, content, data):
         # Extra check: skip if either word is clearly a common noun/verb/adjective
         common = {'data','health','wales','phase','stage','review','launch',
                   'pilot','build','design','brief','report','plan','team',
-                  'lead','head','senior','junior','mid','full','part'}
+                  'lead','head','senior','junior','mid','full','part',
+                  'deploy','portrait','digital','asset','assets','create',
+                  'develop','deliver','produce','generate','implement',
+                  'manage','support','monitor','track','measure','assess',
+                  'train','test','validate','evaluate','refine','scale',
+                  'maternal','vaccine','hesitancy','clinical','trial',
+                  'learning','module','package','programme','program',
+                  'communication','skills','framework','motivational',
+                  'interviewing','persona','avatar','interface','platform'}
         if any(w in common for w in words): continue
         issues.append(f'Possible invented name: "{name}" — verify this is correct')
 
@@ -233,7 +241,15 @@ def sow_spec(data):
     # Try to extract a total figure from the estimate output
     estimate_total = ''
     if estimate:
-        total_matches = re.findall(r'(?:TOTAL|total)[^\d£]*£?([\d,]+)', estimate)
+        # Match "TOTAL ... £XX,XXX" or "£XX,XXX TOTAL" patterns
+        total_matches = re.findall(r'TOTAL[^\d£]*£?([\d,]+)', estimate, re.IGNORECASE)
+        if not total_matches:
+            total_matches = re.findall(r'£([\d,]+)[^\d]*TOTAL', estimate, re.IGNORECASE)
+        if not total_matches:
+            # Fallback: find largest £ figure in estimate
+            all_figures = re.findall(r'£([\d,]+)', estimate)
+            if all_figures:
+                total_matches = [max(all_figures, key=lambda x: int(x.replace(',','')))]
         if total_matches:
             estimate_total = f'£{total_matches[-1]}'
 
