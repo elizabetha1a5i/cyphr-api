@@ -155,18 +155,33 @@ def verify_output(doc_type, content, data):
         data.get('requirements',''), data.get('bgNotes',''),
         data.get('briefOutput',''), data.get('sowOutput',''),
     ])).lower()
+    # Words that appear in milestone/phase/task names — not person name indicators
     skip_words = {
         'project','phase','design','build','launch','sprint','discovery',
         'planning','review','sign','off','kick','total','fixed','price',
         'united','kingdom','north','south','east','west','new','old',
+        'final','initial','core','pilot','delivery','content','training',
+        'analysis','validation','integration','development','evaluation',
+        'reporting','toolkit','refinement','recruitment','setup','testing',
+        'clinical','research','equity','narrative','framework','persona',
+        'psychographic','scoping','grant','award','portal','platform',
+        'output','report','draft','data','brief','milestone','task',
+        'feature','demo','approval','approved','handoff','submission',
     }
+    # Only flag two-word capitalised patterns that look like real person names
+    # — must not contain any skip word, must not be all common nouns
     name_re = re.compile(r'\b([A-Z][a-z]{2,} [A-Z][a-z]{2,})\b')
     for name in set(name_re.findall(content_str)):
         words = name.lower().split()
         if any(w in skip_words for w in words): continue
         if name.lower() in known: continue
         if name.lower() in source: continue
-        issues.append(f'Possible invented name: "{name}" — not in team config or source data')
+        # Extra check: skip if either word is clearly a common noun/verb/adjective
+        common = {'data','health','wales','phase','stage','review','launch',
+                  'pilot','build','design','brief','report','plan','team',
+                  'lead','head','senior','junior','mid','full','part'}
+        if any(w in common for w in words): continue
+        issues.append(f'Possible invented name: "{name}" — verify this is correct')
 
     # 3. Check budget figures don't exceed project budget
     raw = str(data.get('budget','')).replace('£','').replace(',','').strip()
@@ -381,10 +396,34 @@ def build_sow(data, out):
 
     def body(text, size=10):
         if not text: return
+        # Handle lists — render each item as a bullet
+        if isinstance(text, list):
+            for item in text:
+                item = str(item).strip()
+                if not item: continue
+                p = doc.add_paragraph(style='List Bullet')
+                p.add_run(item).font.size = Pt(size)
+            return
+        # Handle dicts — render as labelled sections (used for responsibilities)
+        if isinstance(text, dict):
+            for key, val in text.items():
+                lp = doc.add_paragraph()
+                lp.paragraph_format.space_before = Pt(6)
+                lr = lp.add_run(key.upper() + ':  ')
+                lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_PURPLE
+                if isinstance(val, list):
+                    for item in val:
+                        bp = doc.add_paragraph(style='List Bullet')
+                        bp.add_run(str(item).strip()).font.size = Pt(size)
+                else:
+                    vp = doc.add_paragraph()
+                    vp.add_run(str(val)).font.size = Pt(size)
+            return
+        # Handle string — split on newlines, detect bullets
         for line in str(text).strip().split('\n'):
             line = line.strip()
             if not line: continue
-            if line.startswith(('•','-','*')):
+            if line.startswith(('•', '-', '*')):
                 p = doc.add_paragraph(style='List Bullet')
                 p.add_run(line.lstrip('•-* ').strip()).font.size = Pt(size)
             else:
@@ -820,38 +859,149 @@ def build_brief(data, out):
 
 
 def build_gantt(data, out):
-    """Gantt stays as-is — it works. Just clear old data properly."""
-    shutil.copy(f'{TEMPLATES_DIR}/gantt.xlsx', out)
-    wb    = openpyxl.load_workbook(out)
+    """Generate Gantt from AI-derived phase/task breakdown — no HP template content."""
+    from datetime import timedelta
+
+    # 1. Ask AI for a phase/task breakdown
     client  = data.get('clientName', 'CLIENT')
     project = data.get('projectName', 'PROJECT')
-    label   = f'{client.upper()} — {project.upper()}'
+    timeline = data.get('timeline', '')
+    brief   = data.get('briefOutput', '')
+
+    prompt = f"""You are generating a project Gantt chart breakdown. Return ONLY valid JSON, no markdown.
+
+PROJECT:
+Client: {client}
+Project: {project}
+Timeline: {timeline}
+Brief: {brief[:600] if brief else 'Not provided'}
+
+Return this exact JSON:
+{{
+  "phases": [
+    {{
+      "name": "Phase name",
+      "tasks": ["Task 1", "Task 2", "Task 3"],
+      "milestone": "Milestone name"
+    }}
+  ]
+}}
+
+Rules:
+- 3 to 5 phases that reflect this specific project type
+- 3 to 5 tasks per phase
+- Each phase has one milestone (a key sign-off or deliverable)
+- Names must reflect the actual project — do not use generic sprint names
+- No invented team names or person names
+"""
+    try:
+        spec_json = call_ai(prompt, max_tokens=800)
+        spec = parse_json_response(spec_json)
+        phases = spec.get('phases', [])
+    except Exception as e:
+        print(f'[GANTT AI ERROR] {e}')
+        phases = []
+
+    # 2. Copy the template for formatting/structure
+    shutil.copy(f'{TEMPLATES_DIR}/gantt.xlsx', out)
+    wb = openpyxl.load_workbook(out)
+
+    # Rename sheets
+    for ws in wb.worksheets:
+        if 'gantt' in ws.title.lower() or 'crush' in ws.title.lower():
+            gantt_ws = ws
+            ws.title = f'{client[:20]} Gantt'
+        elif 'decision' in ws.title.lower() or 'log' in ws.title.lower():
+            decision_ws = ws
+
+    ws = gantt_ws
+
+    # 3. Update title row
+    from openpyxl.styles import Font as XFont
+    label = f'{client.upper()} — {project.upper()}'
+    for cell in ws[1]:
+        if cell.value and isinstance(cell.value, str) and ('GANTT' in cell.value or 'HP' in cell.value or 'CRUSH' in cell.value):
+            cell.value = label
+            break
+
+    # 4. Update week headers to start from next Monday
     today = datetime.today()
-    from datetime import timedelta
     days_ahead = (7 - today.weekday()) % 7 or 7
     week_start = today + timedelta(days=days_ahead)
 
-    for ws in wb.worksheets:
-        if 'decision' in ws.title.lower() or 'log' in ws.title.lower():
-            for ri in range(2, ws.max_row + 1):
-                for ci in range(1, ws.max_column + 1):
-                    ws.cell(ri, ci).value = None
-            continue
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.value and isinstance(cell.value, str):
-                    cell.value = (cell.value
-                        .replace('HP CRUSH 3.0 — PROJECT GANTT', label)
-                        .replace('HP CRUSH 3.0', client.upper())
-                        .replace('HP Crush 3.0', client)
-                        .replace('CLIENT', client)
-                        .replace('PROJECT', project))
-                    m = re.match(r'^W(\d+):', str(cell.value))
-                    if m:
-                        wn = int(m.group(1))
-                        wdate = week_start + timedelta(weeks=wn-1)
-                        cell.value = f'W{wn}: {wdate.strftime("%d %b")}'
-        ws.title = f'{client} Gantt'
+    week_cols = []
+    for col in range(7, ws.max_column + 1):
+        cell = ws.cell(row=2, column=col)
+        if cell.value and isinstance(cell.value, str) and re.match(r'W\d+:', str(cell.value)):
+            week_cols.append(col)
+    for i, col in enumerate(week_cols):
+        wdate = week_start + timedelta(weeks=i)
+        try:
+            ws.cell(row=2, column=col).value = f'W{i+1}: {wdate.strftime("%d %b")}'
+        except Exception:
+            pass
+
+    # 5. Clear existing task rows (rows 4 onward) safely
+    merged = set()
+    for mr in ws.merged_cells.ranges:
+        for rt in mr.cells:
+            merged.add((rt[0], rt[1]))
+
+    def safe_write(r, c, val, bold=False, bg=None, color=None):
+        if (r, c) in merged:
+            return
+        try:
+            cell = ws.cell(row=r, column=c)
+            cell.value = val
+            kwargs = {'name': 'Arial', 'size': 10}
+            if bold: kwargs['bold'] = True
+            if color: kwargs['color'] = color
+            cell.font = XFont(**kwargs)
+            if bg:
+                from openpyxl.styles import PatternFill as XFill
+                cell.fill = XFill('solid', fgColor=bg)
+        except Exception:
+            pass
+
+    for r in range(4, min(ws.max_row + 1, 80)):
+        for c in range(1, min(ws.max_column + 1, 7)):
+            safe_write(r, c, None)
+        for c in range(7, min(ws.max_column + 1, len(week_cols) + 7)):
+            safe_write(r, c, None)
+
+    # 6. Write project-specific phases and tasks
+    row = 4
+    for phase_idx, phase in enumerate(phases):
+        phase_name = phase.get('name', f'Phase {phase_idx + 1}')
+        tasks = phase.get('tasks', [])
+        milestone = phase.get('milestone', '')
+
+        # Phase header row
+        safe_write(row, 1, f'  {phase_name.upper()}', bold=True, color='5B4FD9')
+        row += 1
+
+        # Task rows
+        for task in tasks:
+            safe_write(row, 1, None)
+            safe_write(row, 2, phase_name)
+            safe_write(row, 3, task)
+            safe_write(row, 6, False)
+            row += 1
+
+        # Milestone row
+        if milestone:
+            safe_write(row, 1, '🚩')
+            safe_write(row, 2, phase_name)
+            safe_write(row, 3, f'✦ {milestone}', bold=True, color='5B4FD9')
+            safe_write(row, 6, False)
+            # Mark in first available week col for this phase
+            milestone_col_idx = min(phase_idx * 2, len(week_cols) - 1)
+            if week_cols and milestone_col_idx < len(week_cols):
+                safe_write(row, week_cols[milestone_col_idx], '◆', bold=True, color='5B4FD9')
+            row += 1
+
+        row += 1  # blank row between phases
+
     wb.save(out)
 
 
