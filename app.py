@@ -74,9 +74,27 @@ def call_ai(prompt, max_tokens=2000):
         res = requests.post(
             f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
             headers={'Content-Type': 'application/json'},
-            json={'contents': [{'parts': [{'text': prompt}]}]}, timeout=60)
+            json={
+                'contents': [{'parts': [{'text': prompt}]}],
+                'generationConfig': {
+                    'maxOutputTokens': max_tokens,
+                    'temperature': 0.4
+                }
+            }, timeout=60)
         res.raise_for_status()
-        return res.json()['candidates'][0]['content']['parts'][0]['text']
+        result = res.json()
+        candidates = result.get('candidates', [])
+        if not candidates:
+            # Gemini returned no candidates — likely blocked by safety filters or hit token limit with no output
+            finish_reason = result.get('promptFeedback', {}).get('blockReason', 'unknown')
+            raise RuntimeError(f'Gemini returned no candidates (reason: {finish_reason}). Raw response: {result}')
+        candidate = candidates[0]
+        finish_reason = candidate.get('finishReason', '')
+        parts = candidate.get('content', {}).get('parts', [])
+        text = ''.join(p.get('text', '') for p in parts)
+        if finish_reason == 'MAX_TOKENS' and not text.strip():
+            raise RuntimeError(f'Gemini hit MAX_TOKENS with no usable output — max_tokens={max_tokens} may be too low for this prompt')
+        return text
 
     else:  # anthropic (default)
         key = os.environ.get('ANTHROPIC_API_KEY', '')
@@ -257,7 +275,7 @@ def sow_spec(data):
         f'Use this fee from the estimate: {estimate_total} (indicative pro-bono contribution — no direct commercial fee)'
         if estimate_total and (not budget or budget == '0')
         else f'Fee: £{budget}' if budget and budget != '0'
-        else 'Fee is unknown — use exactly: [CONFIRM: fee — confirm with estimate]'
+        else 'No budget figure was provided. Propose a sensible fixed-price fee based on the project scope, timeline, and typical Cyphr Studio engagements of similar size — write it as a real number, not a placeholder.'
     )
 
     prompt = f"""You are generating a Statement of Work for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
@@ -272,13 +290,16 @@ AI SOW draft: {sow_text[:1200] if sow_text else 'Not provided'}
 Estimate: {estimate[:600] if estimate else 'Not provided'}
 Today: {today}
 
+APPROACH:
+Write this the way an experienced consultant would if asked to draft a SOW from the same brief in a normal conversation — commit to a complete, professional, ready-to-send document. Use your judgement to fill reasonable gaps from context (project type, timeline, sector norms) rather than defaulting to a placeholder. A thin or incomplete document is a worse outcome than a confident, well-reasoned one.
+
 RULES:
 - Only use names from this list for Cyphr team: {team_names}. Cyphr delivery lead is always: {CYPHR_DELIVERY_LEAD}.
-- Client contact is unknown — use exactly the string: [CONFIRM: client project lead name and email]
-- Budget: if unknown use exactly: [CONFIRM: budget not yet confirmed]
-- Milestones: derive from timeline and project type. Format as "Milestone name — Date" per line. If dates unknown use: [CONFIRM: milestone dates — confirm at kick-off]
-- Fee instruction: {fee_instruction}
-- Do NOT invent addresses, company numbers, or contact details
+- Client contact: if no name/email was given anywhere in the brief or notes, use exactly: [CONFIRM: client project lead name and email] — this is a genuine fabrication risk (a real person's identity) so this is the one field where a placeholder is correct, not a shortcut.
+- Budget/fee: {fee_instruction}
+- Milestones: derive specific, dated milestones from the timeline and project type — write real calendar dates (e.g. "Kick-off — 3 March 2026"), reasoning forward from today's date and the stated timeline. Only use a placeholder if no timeline information exists anywhere in the input.
+- Do NOT invent addresses, company registration numbers, or named individuals' contact details that were not provided — these are the only categories that warrant [CONFIRM: ...].
+- Everything else (summary, objectives, assumptions, responsibilities, fee, payment terms) should be written in full, as a finished, professional document would read. Do not hedge with placeholders for content you can reasonably infer.
 - Keep each section focused and professional. No filler.
 
 Return this exact JSON structure:
@@ -416,8 +437,11 @@ Return this exact JSON:
 
 def build_sow(data, out):
     # 1. Generate structured content via AI
-    spec_json = call_ai(sow_spec(data), max_tokens=2000)
-    sec = parse_json_response(spec_json)
+    spec_json = call_ai(sow_spec(data), max_tokens=3000)
+    try:
+        sec = parse_json_response(spec_json)
+    except Exception as e:
+        raise RuntimeError(f'SOW generation failed — AI response was not valid JSON (likely truncated). Raw response (first 1000 chars): {spec_json[:1000]}') from e
 
     # 2. Verify before rendering
     issues = verify_output('sow', sec, data)
@@ -570,8 +594,11 @@ def build_sow(data, out):
 
 def build_proposal_docx(data, out):
     # 1. Generate via AI
-    spec_json = call_ai(proposal_spec(data), max_tokens=1500)
-    sec = parse_json_response(spec_json)
+    spec_json = call_ai(proposal_spec(data), max_tokens=2500)
+    try:
+        sec = parse_json_response(spec_json)
+    except Exception as e:
+        raise RuntimeError(f'Proposal generation failed — AI response was not valid JSON (likely truncated). Raw response (first 1000 chars): {spec_json[:1000]}') from e
 
     issues = verify_output('proposal', sec, data)
     if issues:
@@ -675,8 +702,11 @@ def build_proposal_docx(data, out):
 
 def build_estimate(data, out):
     # 1. Generate phase/role breakdown via AI
-    spec_json = call_ai(estimate_spec(data), max_tokens=1500)
-    sec = parse_json_response(spec_json)
+    spec_json = call_ai(estimate_spec(data), max_tokens=2500)
+    try:
+        sec = parse_json_response(spec_json)
+    except Exception as e:
+        raise RuntimeError(f'Estimate generation failed — AI response was not valid JSON (likely truncated). Raw response (first 1000 chars): {spec_json[:1000]}') from e
 
     issues = verify_output('estimate', sec, data)
     if issues:
@@ -970,7 +1000,7 @@ Rules:
 - No invented team names or person names
 """
     try:
-        spec_json = call_ai(prompt, max_tokens=800)
+        spec_json = call_ai(prompt, max_tokens=1500)
         spec = parse_json_response(spec_json)
         phases = spec.get('phases', [])
     except Exception as e:
