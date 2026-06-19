@@ -438,7 +438,8 @@ Return this exact JSON:
       "roles": [
         {{"team_key": "strategy_rob", "days": 2, "source": "context"}},
         {{"team_key": "producer", "days": 3, "source": "estimated"}}
-      ]
+      ],
+      "deliverables": ["Deliverable 1", "Deliverable 2"]
     }}
   ],
   "assumptions": ["assumption 1", "assumption 2"],
@@ -717,182 +718,326 @@ def build_proposal_docx(data, out):
 
 
 def build_estimate(data, out):
+    CONTINGENCY = 0.10
+    MARGIN_RATE = 0.50  # charge-out multiplier on top of cost
+
     # 1. Generate phase/role breakdown via AI
-    spec_json = call_ai(estimate_spec(data), max_tokens=2500)
+    spec_json = call_ai(estimate_spec(data), max_tokens=3000)
     try:
         sec = parse_json_response(spec_json)
     except Exception as e:
-        raise RuntimeError(f'Estimate generation failed — AI response was not valid JSON (likely truncated). Raw response (first 1000 chars): {spec_json[:1000]}') from e
+        raise RuntimeError(f'Estimate JSON parse failed. Raw (first 1000): {spec_json[:1000]}') from e
 
     issues = verify_output('estimate', sec, data)
     if issues:
         print(f'[ESTIMATE VERIFY] {issues}')
 
-    client  = sec.get('client',  data.get('clientName','CLIENT'))
-    project = sec.get('project', data.get('projectName','PROJECT'))
-    today   = datetime.today().strftime('%d/%m/%Y')
+    client   = sec.get('client',  data.get('clientName', 'CLIENT'))
+    project  = sec.get('project', data.get('projectName', 'PROJECT'))
+    today    = datetime.today().strftime('%d %B %Y')
     pro_bono = sec.get('pro_bono', False)
+    phases   = sec.get('phases', [])
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Estimate'
 
-    # Styles
-    def cell_style(cell, bold=False, bg=None, color='1F1F1F', size=10, align='left'):
-        cell.font = Font(name='Arial', size=size, bold=bold,
-                         color=color)
+    # ── helpers ────────────────────────────────────────────────────────────────
+    def s(cell, bold=False, bg=None, color='1F1F1F', size=10,
+          align='left', valign='center', wrap=False, italic=False):
+        cell.font = Font(name='Arial', size=size, bold=bold, italic=italic, color=color)
         if bg:
             cell.fill = PatternFill('solid', fgColor=bg)
-        cell.alignment = Alignment(horizontal=align, vertical='center',
-                                   wrap_text=True)
+        cell.alignment = Alignment(horizontal=align, vertical=valign, wrap_text=wrap)
 
-    def border_all(cell, color='D1D5DB'):
-        s = Side(style='thin', color=color)
-        cell.border = Border(left=s, right=s, top=s, bottom=s)
+    def border(cell, col='D1D5DB', style='thin'):
+        sd = Side(style=style, color=col)
+        cell.border = Border(left=sd, right=sd, top=sd, bottom=sd)
 
-    # Header rows
-    ws.merge_cells('A1:F1')
-    ws['A1'] = f'Cyphr Studio — Cost Estimate{"  |  Indicative pro-bono contribution — £0 direct fee" if pro_bono else ""}'
-    cell_style(ws['A1'], bold=True, size=14, color='5B4FD9')
+    def gbp(cell):
+        cell.number_format = '£#,##0'
 
-    ws.merge_cells('A2:F2')
-    ws['A2'] = f'{client} / {project}  |  {today}'
-    cell_style(ws['A2'], size=10, color='6B7280')
+    def pct(cell):
+        cell.number_format = '0%'
 
-    ws.row_dimensions[1].height = 28
-    ws.row_dimensions[2].height = 18
+    def write(r, c, val, **kw):
+        cell = ws.cell(row=r, column=c, value=val)
+        s(cell, **kw)
+        return cell
 
-    # Column headers row 4
-    headers = ['Phase', 'Role', 'Day Rate (£)', 'Days', 'Cost (£)', 'Notes']
-    col_widths = [22, 28, 14, 8, 12, 30]
-    for i, (h, w) in enumerate(zip(headers, col_widths), 1):
-        c = ws.cell(row=4, column=i, value=h)
-        cell_style(c, bold=True, bg='5B4FD9', color='FFFFFF', align='center')
-        border_all(c, '5B4FD9')
-        ws.column_dimensions[get_column_letter(i)].width = w
+    # ── column layout ─────────────────────────────────────────────────────────
+    # A=1 B=2 C=3 D=4 E=5  gap F=6  G=7 H=8 I=9 J=10 K=11  gap L=12  M=13 N=14
+    col_widths = {1:28, 2:14, 3:8, 4:14, 5:16, 6:2, 7:14, 8:12, 9:14, 10:12, 11:12, 12:2, 13:18, 14:14}
+    for col, w in col_widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
 
-    # Data rows
+    # ── title block ───────────────────────────────────────────────────────────
+    ws.merge_cells('A1:E1')
+    ws['A1'] = 'Cyphr Cost Estimate'
+    s(ws['A1'], bold=True, size=16, color='5B4FD9')
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells('A2:E2')
+    ws['A2'] = f'{client}  /  {project}  |  {today}{"  |  Indicative pro-bono — £0 direct fee" if pro_bono else ""}'
+    s(ws['A2'], size=9, color='6B7280')
+    ws.row_dimensions[2].height = 16
+
+    # ── summary panel (right side, rows 1–10) ─────────────────────────────────
+    def sp(r, label, val=None, is_pct=False, is_gbp=False, bold=False, header=False):
+        lc = ws.cell(row=r, column=13, value=label)
+        s(lc, bold=bold or header, color='5B4FD9' if header else '1F1F1F', size=9)
+        if val is not None:
+            vc = ws.cell(row=r, column=14, value=val)
+            s(vc, bold=bold, align='right', size=9)
+            if is_pct: pct(vc)
+            if is_gbp: gbp(vc)
+            return vc
+        return None
+
+    sp(1, 'Summary', header=True)
+    sp(2, 'Contingency', CONTINGENCY, is_pct=True)
+    sp(3, 'Margin Rate', MARGIN_RATE, is_pct=True)
+    sp(4, 'FX (GBP→EUR)', 0.77)
+
+    # placeholders — filled after we know grand_total
+    sp(6,  'Total Cost (ex-contingency)', bold=True)
+    total_cost_cell     = ws.cell(row=6,  column=14)
+    sp(7,  'Contingency', bold=False)
+    contingency_cell    = ws.cell(row=7,  column=14)
+    sp(8,  'Total (inc. contingency)', bold=True)
+    total_inc_cell      = ws.cell(row=8,  column=14)
+    sp(9,  'Charge-out (50% margin)', bold=True)
+    charge_out_cell     = ws.cell(row=9,  column=14)
+    sp(10, 'Net (charge-out − cost)', bold=False)
+    net_cell            = ws.cell(row=10, column=14)
+
+    for r in range(1, 11):
+        for c in (13, 14):
+            ws.cell(row=r, column=c).fill = PatternFill('solid', fgColor='F8F7FF')
+
+    # ── column headers row 4 ──────────────────────────────────────────────────
+    ws.row_dimensions[4].height = 20
+    main_headers = [
+        (1, 'Role'), (2, 'Rate (£/day)'), (3, 'Days'), (4, 'Fees (£)'), (5, 'Charge-out (£)'),
+    ]
+    actual_headers = [
+        (7, 'Actual Rate'), (8, 'Actual Days'), (9, 'Actual Fees'), (10, 'Variance'), (11, 'Profit'),
+    ]
+    for col, label in main_headers + actual_headers:
+        c = ws.cell(row=4, column=col, value=label)
+        s(c, bold=True, bg='5B4FD9', color='FFFFFF', align='center', size=9)
+        border(c, '5B4FD9')
+
+    # ── data rows ─────────────────────────────────────────────────────────────
     row = 5
-    grand_total = 0
-    phases = sec.get('phases', [])
+    grand_cost = 0
 
     for phase in phases:
-        phase_name = phase.get('name', 'Phase')
-        roles = phase.get('roles', [])
-        phase_total = 0
+        phase_name  = phase.get('name', 'Phase')
+        roles       = phase.get('roles', [])
+        phase_cost  = 0
 
-        # Phase header row
-        ws.merge_cells(f'A{row}:F{row}')
+        # Phase header
+        ws.merge_cells(f'A{row}:E{row}')
         c = ws.cell(row=row, column=1, value=phase_name)
-        cell_style(c, bold=True, bg='E8E5FF', color='5B4FD9')
+        s(c, bold=True, bg='E8E5FF', color='5B4FD9', size=10)
         ws.row_dimensions[row].height = 18
         row += 1
 
         for role_entry in roles:
             team_key = role_entry.get('team_key', '')
-            days     = role_entry.get('days', 0)
-            source   = role_entry.get('source', 'estimated')  # 'context' or 'estimated'
+            days     = float(role_entry.get('days', 0))
             team     = CYPHR_TEAM.get(team_key)
             if not team:
                 continue
-            rate  = team['rate']
-            cost  = rate * days
-            phase_total += cost
+            rate      = team['rate']
+            fees      = rate * days
+            charge    = fees * (1 + MARGIN_RATE)
+            phase_cost += fees
 
-            # Subtle visual: estimated rows use a slightly warmer tint
-            is_estimated = source != 'context'
-            row_bg = 'FFF8F0' if is_estimated else ('F3F2FF' if (row % 2 == 0) else 'FFFFFF')
-            note_text = '~ AI estimate' if is_estimated else '✓ From context'
-            note_color = 'B45309' if is_estimated else '065F46'
+            row_bg = 'F3F2FF' if (row % 2 == 0) else 'FFFFFF'
 
-            cells_data = [phase_name, team['name'], rate, days, cost, note_text]
-            for col_i, val in enumerate(cells_data, 1):
-                c = ws.cell(row=row, column=col_i, value=val)
-                cell_style(c, bg=row_bg, align='center' if col_i > 2 else 'left')
-                border_all(c)
-                if col_i in (3, 5):
-                    c.number_format = '£#,##0'
-                if col_i == 6:
-                    c.font = Font(name='Arial', size=9, italic=True,
-                                  color=note_color)
-                    c.alignment = Alignment(horizontal='left', vertical='center')
+            vals = [(1, team['name'], 'left'), (2, rate, 'center'), (3, days, 'center'),
+                    (4, fees, 'center'), (5, charge, 'center')]
+            for col, val, aln in vals:
+                c = ws.cell(row=row, column=col, value=val)
+                s(c, bg=row_bg, align=aln, size=9)
+                border(c)
+                if col in (2, 4, 5):
+                    gbp(c)
+
+            # Actual columns (empty — for manual fill)
+            for col in (7, 8, 9, 10, 11):
+                c = ws.cell(row=row, column=col)
+                s(c, bg='FAFAFA', size=9)
+                border(c, 'E5E7EB')
+
             ws.row_dimensions[row].height = 16
             row += 1
 
-        # Phase subtotal
-        st_cell = ws.cell(row=row, column=4, value='Subtotal')
-        cell_style(st_cell, bold=True, align='right')
-        cost_cell = ws.cell(row=row, column=5, value=phase_total)
-        cell_style(cost_cell, bold=True, bg='E8E5FF')
-        cost_cell.number_format = '£#,##0'
-        border_all(cost_cell, '5B4FD9')
-        grand_total += phase_total
-        row += 2
+        # Phase subtotals
+        phase_contingency = phase_cost * CONTINGENCY
+        phase_sub         = phase_cost + phase_contingency
+        phase_charge      = phase_cost * (1 + MARGIN_RATE)
 
-    # Grand total
-    ws.merge_cells(f'A{row}:D{row}')
-    tc = ws.cell(row=row, column=1, value='TOTAL')
-    cell_style(tc, bold=True, size=11, bg='5B4FD9', color='FFFFFF', align='right')
-    gc = ws.cell(row=row, column=5, value=grand_total)
-    cell_style(gc, bold=True, size=11, bg='5B4FD9', color='FFFFFF', align='center')
-    gc.number_format = '£#,##0'
-    ws.row_dimensions[row].height = 22
-    row += 2
+        for col, label, val, fmt in [
+            (3, 'Sub Total Cost', phase_cost, 'gbp'),
+            (3, 'Contingency (10%)', phase_contingency, 'gbp'),
+            (3, 'Sub Total', phase_sub, 'gbp'),
+            (3, 'Charge-out', phase_charge, 'gbp'),
+        ]:
+            lc = ws.cell(row=row, column=col, value=label)
+            s(lc, bold=True, align='right', size=9, color='6B7280')
+            vc = ws.cell(row=row, column=4, value=val)
+            s(vc, bold=(label in ('Sub Total', 'Charge-out')), bg='E8E5FF', align='center', size=9)
+            gbp(vc)
+            border(vc, '5B4FD9')
+            ws.row_dimensions[row].height = 15
+            row += 1
 
-    # Assumptions
-    ws.cell(row=row, column=1, value='Assumptions').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
-    row += 1
-    for a in sec.get('assumptions', []):
-        c = ws.cell(row=row, column=1, value=f'• {a}')
-        c.font = Font(name='Arial', size=9, color='6B7280')
-        ws.merge_cells(f'A{row}:F{row}')
-        row += 1
+        grand_cost += phase_cost
+        row += 1  # gap between phases
 
-    row += 1
-    ws.cell(row=row, column=1, value='Exclusions').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
-    row += 1
-    for e in sec.get('exclusions', []):
-        c = ws.cell(row=row, column=1, value=f'• {e}')
-        c.font = Font(name='Arial', size=9, color='6B7280')
-        ws.merge_cells(f'A{row}:F{row}')
-        row += 1
+    # ── grand totals ──────────────────────────────────────────────────────────
+    grand_contingency = grand_cost * CONTINGENCY
+    grand_total       = grand_cost + grand_contingency
+    grand_charge      = grand_cost * (1 + MARGIN_RATE)
+    grand_net         = grand_charge - grand_cost
 
-    # Legend
-    row += 1
-    ws.cell(row=row, column=1, value='Notes legend').font = Font(name='Arial', bold=True, size=9, color='6B7280')
-    row += 1
-    for legend_bg, legend_color, legend_text in [
-        ('F3F2FF', '5B4FD9', '✓ From context — days derived from brief, transcript, or source material'),
-        ('FFF8F0', 'B45309', '~ AI estimate — days are a professional estimate, not explicitly stated in source material'),
+    for label, val, bold, bg in [
+        ('Total Cost',              grand_cost,         True,  '5B4FD9'),
+        ('Contingency (10%)',       grand_contingency,  False, '7C6FE0'),
+        ('Total (inc. contingency)',grand_total,         True,  '5B4FD9'),
+        ('Charge-out (50% margin)', grand_charge,        True,  '3D30C8'),
+        ('Net',                     grand_net,           False, '7C6FE0'),
     ]:
-        c = ws.cell(row=row, column=1, value=legend_text)
-        c.font = Font(name='Arial', size=9, italic=True, color=legend_color)
-        c.fill = PatternFill('solid', fgColor=legend_bg)
-        ws.merge_cells(f'A{row}:F{row}')
+        ws.merge_cells(f'A{row}:C{row}')
+        lc = ws.cell(row=row, column=1, value=label)
+        s(lc, bold=bold, bg=bg, color='FFFFFF', align='right', size=10)
+        vc = ws.cell(row=row, column=4, value=val)
+        s(vc, bold=bold, bg=bg, color='FFFFFF', align='center', size=10)
+        gbp(vc)
+        ws.row_dimensions[row].height = 20
         row += 1
 
-    # Rate card sheet
-    rc = wb.create_sheet('Rate Card')
-    rc_headers = ['Role', 'Day Rate (£)']
-    for i, h in enumerate(rc_headers, 1):
-        c = rc.cell(row=1, column=i, value=h)
-        c.font = Font(name='Arial', bold=True, color='FFFFFF', size=10)
+    # Fill summary panel values
+    for cell, val in [
+        (total_cost_cell,  grand_cost),
+        (contingency_cell, grand_contingency),
+        (total_inc_cell,   grand_total),
+        (charge_out_cell,  grand_charge),
+        (net_cell,         grand_net),
+    ]:
+        cell.value = val
+        s(cell, bold=True, align='right', size=9)
+        gbp(cell)
+
+    # ── assumptions + exclusions ───────────────────────────────────────────────
+    row += 2
+    for section_label, items in [('Assumptions', sec.get('assumptions', [])),
+                                   ('Exclusions',  sec.get('exclusions',  []))]:
+        ws.merge_cells(f'A{row}:E{row}')
+        c = ws.cell(row=row, column=1, value=section_label)
+        s(c, bold=True, size=10, color='5B4FD9')
+        row += 1
+        for item in items:
+            ws.merge_cells(f'A{row}:E{row}')
+            c = ws.cell(row=row, column=1, value=f'• {item}')
+            s(c, size=9, color='6B7280', wrap=True)
+            ws.row_dimensions[row].height = 14
+            row += 1
+        row += 1
+
+    # ── Timings + Deliverables sheet ──────────────────────────────────────────
+    ts = wb.create_sheet('Timings + Deliverables')
+    ts.column_dimensions['A'].width = 36
+    ts['A1'] = 'Timeline'
+    ts['A1'].font = Font(name='Arial', bold=True, size=14, color='5B4FD9')
+    ts.row_dimensions[1].height = 26
+
+    week_cols = list(range(2, 14))  # B–M = weeks 1–12
+    for i, wc in enumerate(week_cols, 1):
+        c = ts.cell(row=2, column=wc, value=f'Week {i}')
+        c.font = Font(name='Arial', bold=True, size=9, color='FFFFFF')
         c.fill = PatternFill('solid', fgColor='5B4FD9')
-    for r_i, (key, val) in enumerate(CYPHR_TEAM.items(), 2):
-        rc.cell(row=r_i, column=1, value=val['name']).font = Font(name='Arial', size=10)
-        rate_c = rc.cell(row=r_i, column=2, value=val['rate'])
-        rate_c.font = Font(name='Arial', size=10)
-        rate_c.number_format = '£#,##0'
-    rc.column_dimensions['A'].width = 30
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        ts.column_dimensions[get_column_letter(wc)].width = 8
+
+    t_row = 3
+    for phase in phases:
+        phase_name = phase.get('name', 'Phase')
+        c = ts.cell(row=t_row, column=1, value=phase_name)
+        c.font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
+        c.fill = PatternFill('solid', fgColor='E8E5FF')
+        ts.merge_cells(f'A{t_row}:M{t_row}')
+        ts.row_dimensions[t_row].height = 18
+        t_row += 1
+
+        for deliverable in phase.get('deliverables', []):
+            c = ts.cell(row=t_row, column=1, value=f'  • {deliverable}')
+            c.font = Font(name='Arial', size=9)
+            ts.row_dimensions[t_row].height = 14
+            t_row += 1
+
+        t_row += 1
+
+    # Deliverables section
+    t_row += 1
+    ts.cell(row=t_row, column=1, value='Deliverables').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
+    t_row += 1
+    all_deliverables = []
+    for phase in phases:
+        all_deliverables.extend(phase.get('deliverables', []))
+    for i, d in enumerate(all_deliverables, 1):
+        c = ts.cell(row=t_row, column=1, value=f'{i}. {d}')
+        c.font = Font(name='Arial', size=9)
+        ts.row_dimensions[t_row].height = 14
+        t_row += 1
+
+    # ── Rate card sheet ───────────────────────────────────────────────────────
+    rc = wb.create_sheet('Rate Card')
+    rc['A1'] = 'Cyphr Rate Card'
+    rc['A1'].font = Font(name='Arial', bold=True, size=12, color='5B4FD9')
+    rc.merge_cells('A1:B1')
+    rc.row_dimensions[1].height = 24
+
+    categories = {
+        'Strategy': ['strategy_rob', 'strategy_james'],
+        'Production': ['producer'],
+        'Technology': ['tech_lead', 'tech_lead_p2', 'dev_senior', 'dev_mid'],
+        'Quality & Support': ['qa', 'support', 'hosting'],
+    }
+    rc_row = 3
+    for cat, keys in categories.items():
+        c = rc.cell(row=rc_row, column=1, value=cat)
+        c.font = Font(name='Arial', bold=True, size=10, color='FFFFFF')
+        c.fill = PatternFill('solid', fgColor='5B4FD9')
+        rc.merge_cells(f'A{rc_row}:B{rc_row}')
+        rc.row_dimensions[rc_row].height = 18
+        rc_row += 1
+        for key in keys:
+            team = CYPHR_TEAM.get(key)
+            if not team:
+                continue
+            rc.cell(row=rc_row, column=1, value=team['name']).font = Font(name='Arial', size=9)
+            rate_c = rc.cell(row=rc_row, column=2, value=team['rate'])
+            rate_c.font = Font(name='Arial', size=9)
+            rate_c.number_format = '£#,##0'
+            rate_c.alignment = Alignment(horizontal='right')
+            rc_row += 1
+        rc_row += 1
+
+    rc.column_dimensions['A'].width = 32
     rc.column_dimensions['B'].width = 14
 
+    # ── verify sheet ──────────────────────────────────────────────────────────
     if issues:
-        note_sheet = wb.create_sheet('⚠ Verify')
-        note_sheet['A1'] = 'Issues to check before sending:'
-        note_sheet['A1'].font = Font(name='Arial', bold=True, color='CC4400', size=11)
+        vs = wb.create_sheet('⚠ Verify')
+        vs['A1'] = 'Issues to check before sending'
+        vs['A1'].font = Font(name='Arial', bold=True, color='CC4400', size=11)
         for i, issue in enumerate(issues, 2):
-            note_sheet[f'A{i}'] = f'• {issue}'
-            note_sheet[f'A{i}'].font = Font(name='Arial', size=10)
+            vs[f'A{i}'] = f'• {issue}'
+            vs[f'A{i}'].font = Font(name='Arial', size=10)
 
     wb.save(out)
 
