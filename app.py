@@ -71,8 +71,9 @@ def call_ai(prompt, max_tokens=2000):
 
     elif provider == 'gemini':
         key = os.environ.get('GEMINI_API_KEY', '')
+        model = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash')
         res = requests.post(
-            f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
+            f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}',
             headers={'Content-Type': 'application/json'},
             json={
                 'contents': [{'parts': [{'text': prompt}]}],
