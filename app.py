@@ -797,21 +797,49 @@ def build_proposal_pptx(data, out):
                 if lines:
                     return lines
             return []
+        # Parse scope_services from SLIDE 4 lines like "Strategy & Venture: item, item"
+        scope_raw = sl.get('SCOPE + SERVICES', sl.get('SCOPE AND SERVICES', []))
+        scope_services = {}
+        for line in scope_raw:
+            if ':' in line:
+                cat, items = line.split(':', 1)
+                scope_services[cat.strip()] = [i.strip() for i in items.split(',') if i.strip()]
+
+        # Parse cost_sections from SLIDE 8
+        cost_raw = sl.get('COST BREAKDOWN', [])
+        cost_sections = []
+        current_phase = None
+        total_line = ''
+        for line in cost_raw:
+            if line.upper().startswith('TOTAL:'):
+                total_line = line.split(':', 1)[-1].strip()
+            elif re.match(r'^[A-Z].+: £', line):
+                name, amount = line.rsplit(':', 1)
+                current_phase = {'name': name.strip(), 'amount': amount.strip(), 'tasks': [], 'team': '', 'duration': ''}
+                cost_sections.append(current_phase)
+            elif current_phase:
+                if line.lower().startswith('tasks:'):
+                    current_phase['tasks'] = [t.strip() for t in line[6:].split(',') if t.strip()]
+                elif line.lower().startswith('team:'):
+                    current_phase['team'] = line[5:].strip()
+                elif line.lower().startswith('duration:'):
+                    current_phase['duration'] = line[9:].strip()
+
         sec = {
             'client':            data.get('clientName', 'CLIENT'),
             'project':           data.get('projectName', 'PROJECT'),
             'date':              today,
-            'executive_summary': _join('EXECUTIVE SUMMARY', 'COVER'),
-            'opportunity':       _join('THE OPPORTUNITY', 'OPPORTUNITY'),
-            'approach':          _list('OUR APPROACH', 'APPROACH'),
-            'deliverables':      _list('WHAT WE DELIVER', 'DELIVERABLES'),
-            'milestones':        _list('TIMELINE'),
-            'investment':        _join('INVESTMENT'),
+            'executive_summary': _join('EXECUTIVE SUMMARY'),
+            'opportunity':       _join('THE ASK', 'THE OPPORTUNITY'),
+            'approach':          _list('THE ASK', 'OUR APPROACH'),
+            'deliverables':      _list('DETAILED DELIVERABLES', 'WHAT WE DELIVER'),
+            'milestones':        _list('PROJECT MILESTONES', 'PROJECT TIMELINE', 'TIMELINE'),
+            'investment':        _join('COST BREAKDOWN', 'INVESTMENT'),
             'why_cyphr':         _join('WHY CYPHR'),
-            'assumptions':       [],
-            'cost_sections':     [],
-            'total':             data.get('budget', ''),
-            'scope_services':    {},
+            'assumptions':       [l for l in _list('COST BREAKDOWN') if l.startswith('-')],
+            'cost_sections':     cost_sections,
+            'total':             total_line or data.get('budget', ''),
+            'scope_services':    scope_services,
         }
     else:
         # No skill output — generate content via AI
