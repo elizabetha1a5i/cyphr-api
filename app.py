@@ -11,10 +11,6 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import shutil, subprocess
-from pptx import Presentation as PptxPresentation
-from pptx.util import Inches as PptxInches, Pt as PptxPt
-from pptx.dml.color import RGBColor as PptxRGB
-from pptx.enum.text import PP_ALIGN
 
 app = Flask(__name__)
 CORS(app)
@@ -745,6 +741,11 @@ def build_proposal_docx(data, out):
 
 
 def build_proposal_pptx(data, out):
+    from pptx import Presentation as PptxPresentation
+    from pptx.util import Inches as PptxInches, Pt as PptxPt
+    from pptx.dml.color import RGBColor as PptxRGB
+    from pptx.enum.text import PP_ALIGN
+
     # ── Brand assets ──────────────────────────────────────────────────────────
     ASSETS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'brand')
     LOGO_PATH   = os.path.join(ASSETS_DIR, 'Logo.png')
