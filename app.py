@@ -108,6 +108,21 @@ def call_ai(prompt, max_tokens=2000):
         return res.json()['content'][0]['text']
 
 
+def add_run_md(paragraph, text, size=None, color=None):
+    """Write text to a paragraph, converting **bold** markdown into real bold runs."""
+    parts = re.split(r'\*\*(.+?)\*\*', text)
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        run = paragraph.add_run(part)
+        if size:
+            run.font.size = Pt(size)
+        if color:
+            run.font.color.rgb = color
+        if i % 2 == 1:
+            run.bold = True
+
+
 def parse_json_response(text):
     """Strip markdown fences and parse JSON from AI response."""
     clean = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.MULTILINE)
@@ -489,10 +504,10 @@ def build_sow(data, out):
                 if isinstance(val, list):
                     for item in val:
                         bp = doc.add_paragraph(style='List Bullet')
-                        bp.add_run(str(item).strip()).font.size = Pt(size)
+                        add_run_md(bp, str(item).strip(), size=size)
                 else:
                     vp = doc.add_paragraph()
-                    vp.add_run(str(val)).font.size = Pt(size)
+                    add_run_md(vp, str(val), size=size)
             return
         # Handle string — split on newlines, detect bullets
         for line in str(text).strip().split('\n'):
@@ -500,11 +515,11 @@ def build_sow(data, out):
             if not line: continue
             if line.startswith(('•', '-', '*')):
                 p = doc.add_paragraph(style='List Bullet')
-                p.add_run(line.lstrip('•-* ').strip()).font.size = Pt(size)
+                add_run_md(p, line.lstrip('•-* ').strip(), size=size)
             else:
                 p = doc.add_paragraph()
                 p.paragraph_format.space_after = Pt(3)
-                p.add_run(line).font.size = Pt(size)
+                add_run_md(p, line, size=size)
 
     def rule():
         p = doc.add_paragraph()
@@ -628,14 +643,14 @@ def build_proposal_docx(data, out):
         if isinstance(text, list):
             for item in text:
                 p = doc.add_paragraph(style='List Bullet')
-                p.add_run(str(item)).font.size = Pt(size)
+                add_run_md(p, str(item), size=size)
         else:
             for line in str(text).strip().split('\n'):
                 line = line.strip()
                 if not line: continue
                 p = doc.add_paragraph()
                 p.paragraph_format.space_after = Pt(3)
-                p.add_run(line).font.size = Pt(size)
+                add_run_md(p, line, size=size)
 
     def rule():
         p = doc.add_paragraph()
@@ -943,18 +958,18 @@ def build_brief(data, out):
                 hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = C_PURPLE
             elif line.startswith(('• ','- ','* ')):
                 p = doc.add_paragraph(style='List Bullet')
-                p.add_run(line[2:].strip()).font.size = Pt(10)
+                add_run_md(p, line[2:].strip(), size=10)
             else:
                 p = doc.add_paragraph()
                 p.paragraph_format.space_after = Pt(4)
-                p.add_run(line).font.size = Pt(10)
+                add_run_md(p, line, size=10)
     elif requirements:
         h = doc.add_paragraph()
         h.add_run('REQUIREMENTS').bold = True
         for line in requirements.split('\n'):
             if line.strip():
                 p = doc.add_paragraph(style='List Bullet')
-                p.add_run(line.strip().lstrip('•-* ')).font.size = Pt(10)
+                add_run_md(p, line.strip().lstrip('•-* '), size=10)
 
     doc.add_paragraph()
     fp = doc.add_paragraph()
