@@ -11,6 +11,10 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import shutil, subprocess
+from pptx import Presentation as PptxPresentation
+from pptx.util import Inches as PptxInches, Pt as PptxPt
+from pptx.dml.color import RGBColor as PptxRGB
+from pptx.enum.text import PP_ALIGN
 
 app = Flask(__name__)
 CORS(app)
@@ -348,9 +352,9 @@ def proposal_spec(data):
     sector   = data.get('sector', '')
     proposal = data.get('proposalOutput', '')
     brief    = data.get('briefOutput', '')
-    today    = datetime.today().strftime('%-d %B %Y')
+    today    = datetime.today().strftime('%d %B %Y')
 
-    prompt = f"""You are generating a commercial proposal for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
+    prompt = f"""You are generating a branded commercial proposal for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
 
 PROJECT DATA:
 Client: {client}
@@ -363,13 +367,18 @@ Proposal draft: {proposal[:1000] if proposal else 'Not provided'}
 
 RULES:
 - Write as Cyphr Studio — confident, direct, no fluff
-- executive_summary: 2-3 sentences max
-- opportunity: what problem this solves for the client
-- approach: how Cyphr will tackle it — 3-4 bullet points
-- deliverables: what the client receives — specific, not vague
-- why_cyphr: 2-3 sentences on why Cyphr is the right partner for this
-- investment: fee summary with total matching budget
-- Do NOT reference Samsung, Blue Square, roadshow, or any other client
+- executive_summary: 2-3 punchy sentences
+- opportunity: 1-2 sentences on the client's core problem
+- approach: 3-4 bullet strings — how Cyphr will tackle it
+- scope_services: exactly 4 keys as shown — tailor items to the project (3-5 items each)
+- deliverables: 4-6 specific deliverable strings (not vague)
+- milestones: 3-5 timeline strings e.g. "Week 1 — Kick-off & discovery"
+- cost_sections: 2-3 phase objects matching the budget — tasks list (3 items), team string, duration string, amount string like "£14,000"
+- total: total fee string matching budget
+- assumptions: 4-5 short assumption strings
+- why_cyphr: 2-3 sentences — confident, specific
+- investment: one-line fee summary
+- Do NOT reference Samsung, Blue Square, roadshow, or any previous client
 
 Return this exact JSON:
 {{
@@ -379,7 +388,25 @@ Return this exact JSON:
   "executive_summary": "...",
   "opportunity": "...",
   "approach": ["bullet 1", "bullet 2", "bullet 3"],
-  "deliverables": ["deliverable 1", "deliverable 2", "deliverable 3"],
+  "scope_services": {{
+    "Strategy & Venture": ["item 1", "item 2", "item 3"],
+    "Product Design & Build": ["item 1", "item 2", "item 3"],
+    "Marketing": ["item 1", "item 2", "item 3"],
+    "Data & Insights": ["item 1", "item 2", "item 3"]
+  }},
+  "deliverables": ["deliverable 1", "deliverable 2", "deliverable 3", "deliverable 4"],
+  "milestones": ["Week 1 — Kick-off", "Week 3 — Discovery complete"],
+  "cost_sections": [
+    {{
+      "name": "Phase name",
+      "tasks": ["task 1", "task 2", "task 3"],
+      "team": "Strategy Lead, Producer, Tech Lead",
+      "duration": "X weeks",
+      "amount": "£XX,XXX"
+    }}
+  ],
+  "total": "£XX,XXX",
+  "assumptions": ["assumption 1", "assumption 2", "assumption 3"],
   "why_cyphr": "...",
   "investment": "...",
   "timeline": "{timeline}"
@@ -715,6 +742,290 @@ def build_proposal_docx(data, out):
         nr.font.size = Pt(8); nr.font.color.rgb = RGBColor(0xCC, 0x44, 0x00)
 
     doc.save(out)
+
+
+def build_proposal_pptx(data, out):
+    # ── Brand assets ──────────────────────────────────────────────────────────
+    ASSETS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'brand')
+    LOGO_PATH   = os.path.join(ASSETS_DIR, 'Logo.png')
+    PHOTO_PATHS = [
+        os.path.join(ASSETS_DIR, 'Group 2147258359.png'),
+        os.path.join(ASSETS_DIR, 'Group 2147258362.png'),
+        os.path.join(ASSETS_DIR, 'Group 2147258323.png'),
+    ]
+
+    # ── Colours ───────────────────────────────────────────────────────────────
+    C_BG     = PptxRGB(0xE9, 0xE5, 0xDC)
+    C_INK    = PptxRGB(0x11, 0x11, 0x11)
+    C_ACCENT = PptxRGB(0x2B, 0x28, 0xF5)
+    C_MUTED  = PptxRGB(0x88, 0x80, 0x78)
+    C_RULE   = PptxRGB(0x11, 0x11, 0x11)
+    C_DARK   = PptxRGB(0x2a, 0x22, 0x18)
+    C_LIGHT  = PptxRGB(0xCC, 0xC8, 0xC0)
+
+    # ── AI content ────────────────────────────────────────────────────────────
+    spec_json = call_ai(proposal_spec(data), max_tokens=3500)
+    try:
+        sec = parse_json_response(spec_json)
+    except Exception as e:
+        raise RuntimeError(f'Proposal PPTX: AI response not valid JSON. Raw: {spec_json[:1000]}') from e
+
+    issues = verify_output('proposal', sec, data)
+    if issues:
+        print(f'[PROPOSAL PPTX] {issues}')
+
+    client  = sec.get('client',  data.get('clientName', 'CLIENT'))
+    project = sec.get('project', data.get('projectName', 'PROJECT'))
+    today   = sec.get('date',    datetime.today().strftime('%d %B %Y'))
+
+    # ── Presentation ──────────────────────────────────────────────────────────
+    prs   = PptxPresentation()
+    prs.slide_width  = PptxInches(13.33)
+    prs.slide_height = PptxInches(7.5)
+    blank = prs.slide_layouts[6]
+
+    SW = prs.slide_width
+    SH = prs.slide_height
+    ML = PptxInches(0.42)
+    RY = PptxInches(0.74)
+    CT = PptxInches(0.9)
+
+    # ── Low-level helpers ─────────────────────────────────────────────────────
+    def set_bg(slide):
+        f = slide.background.fill
+        f.solid()
+        f.fore_color.rgb = C_BG
+
+    def add_rect(slide, x, y, w, h, color=None):
+        sh = slide.shapes.add_shape(1, x, y, w, h)
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = color or C_INK
+        sh.line.fill.background()
+        return sh
+
+    def add_tb(slide, text, x, y, w, h,
+               font='Impact', size=72, color=None,
+               align=PP_ALIGN.LEFT, wrap=True, bold=False):
+        color = color or C_INK
+        box   = slide.shapes.add_textbox(x, y, w, h)
+        tf    = box.text_frame
+        tf.word_wrap = wrap
+        p     = tf.paragraphs[0]
+        p.alignment = align
+        run   = p.add_run()
+        run.text           = text
+        run.font.name      = font
+        run.font.size      = PptxPt(size)
+        run.font.color.rgb = color
+        run.font.bold      = bold
+        return box
+
+    def add_tb_lines(slide, lines, x, y, w, h,
+                     font='Impact', size=72, color=None,
+                     align=PP_ALIGN.LEFT):
+        color = color or C_INK
+        box   = slide.shapes.add_textbox(x, y, w, h)
+        tf    = box.text_frame
+        tf.word_wrap = True
+        for i, line in enumerate(lines):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            run = p.add_run()
+            run.text           = line
+            run.font.name      = font
+            run.font.size      = PptxPt(size)
+            run.font.color.rgb = color
+        return box
+
+    def add_header(slide, page_num):
+        set_bg(slide)
+        if os.path.exists(LOGO_PATH):
+            slide.shapes.add_picture(LOGO_PATH, ML, PptxInches(0.16), height=PptxInches(0.42))
+        else:
+            add_tb(slide, 'CYPHR', ML, PptxInches(0.18), PptxInches(2), PptxInches(0.45),
+                   font='Impact', size=16)
+        crumb_box = slide.shapes.add_textbox(
+            SW - PptxInches(2.5), PptxInches(0.16), PptxInches(2.45), PptxInches(0.52))
+        tf = crumb_box.text_frame
+        tf.word_wrap = False
+        for i, line in enumerate([f'CYPHR X {client.upper()}', f'PAGE  {page_num}']):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = PP_ALIGN.RIGHT
+            run = p.add_run()
+            run.text           = line
+            run.font.name      = 'Arial'
+            run.font.size      = PptxPt(5.5)
+            run.font.color.rgb = C_INK
+        add_rect(slide, PptxInches(0), RY, SW, PptxPt(1.5))
+
+    def add_photo_strip(slide, y, h):
+        gap = PptxInches(0.1)
+        pw  = (SW - gap * 2) // 3
+        for i, path in enumerate(PHOTO_PATHS):
+            x = pw * i + gap * i
+            if os.path.exists(path):
+                try:
+                    slide.shapes.add_picture(path, x, y, pw, h)
+                    continue
+                except Exception:
+                    pass
+            add_rect(slide, x, y, pw, h, C_DARK)
+
+    # ── SLIDE 1: COVER ────────────────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 1)
+    add_tb(sl, client.upper(),
+           ML, PptxInches(0.82), SW - ML * 2, PptxInches(3.2),
+           font='Impact', size=120)
+    add_tb_lines(sl, [project.upper(), 'Proposal'],
+                 ML, PptxInches(4.05), PptxInches(9), PptxInches(1.4),
+                 font='Impact', size=28)
+    add_photo_strip(sl, PptxInches(4.95), SH - PptxInches(4.95))
+
+    # ── SLIDE 2: EXECUTIVE SUMMARY ────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 2)
+    add_tb_lines(sl, ['Executive', 'Summary'],
+                 ML, CT, SW * 0.58, PptxInches(3.6), font='Impact', size=80)
+    body = sec.get('executive_summary', '')
+    if body:
+        add_tb(sl, body, ML, SH - PptxInches(1.55), SW * 0.68, PptxInches(1.35),
+               font='Arial', size=10)
+
+    # ── SLIDE 3: THE ASK ──────────────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 3)
+    add_tb(sl, 'The Ask', ML, CT, SW * 0.58, PptxInches(3), font='Impact', size=80)
+    opp      = sec.get('opportunity', '')
+    approach = sec.get('approach', [])
+    ay = SH - PptxInches(2.4)
+    if opp:
+        add_tb(sl, opp, ML, ay, SW * 0.65, PptxInches(0.65), font='Arial', size=9.5)
+        ay += PptxInches(0.7)
+    if approach:
+        add_tb(sl, '\n'.join(f'●  {a}' for a in approach),
+               ML, ay, SW * 0.65, PptxInches(1.5), font='Arial', size=9, wrap=True)
+
+    # ── SLIDE 4: SCOPE + SERVICES ─────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 4)
+    add_tb_lines(sl, ['Scope +', 'Services'],
+                 ML, CT, PptxInches(5), PptxInches(2.5), font='Impact', size=56)
+    add_tb(sl, 'Creating tomorrow\'s digital products, services and experiences.',
+           ML, PptxInches(3.6), PptxInches(5), PptxInches(0.55),
+           font='Arial', size=9, color=C_MUTED)
+
+    scope = sec.get('scope_services', {
+        'Strategy & Venture':    ['IP development & product creation', 'Joint ventures & partnerships', 'Venture studio model'],
+        'Product Design & Build':['User research & usability testing', 'UX/UI design', 'Front-end/back-end development'],
+        'Marketing':             ['Marketing strategy & planning', 'Fan lifecycle marketing', 'Campaign activation'],
+        'Data & Insights':       ['Audience segmentation', 'Data & performance analytics', 'Predictive insights'],
+    })
+    cats  = list(scope.items())[:4]
+    gx    = SW * 0.38
+    gw    = SW - gx
+    cw    = gw / 2
+    ch    = (SH - CT) / 2
+    add_rect(sl, gx, CT, PptxPt(1.5), SH - CT)
+    add_rect(sl, gx, CT, gw, PptxPt(1.5))
+    add_rect(sl, gx, CT + ch, gw, PptxPt(1.5))
+    add_rect(sl, gx + cw, CT, PptxPt(1.5), SH - CT)
+    for i, (cat, items) in enumerate(cats):
+        col = i % 2
+        row = i // 2
+        cx  = gx + cw * col + PptxInches(0.22)
+        cy  = CT + ch * row + PptxInches(0.18)
+        add_tb(sl, cat, cx, cy, cw - PptxInches(0.3), PptxInches(0.32),
+               font='Arial', size=7.5, bold=True)
+        add_tb(sl, '\n'.join(items[:5]),
+               cx, cy + PptxInches(0.38), cw - PptxInches(0.3),
+               ch - PptxInches(0.55), font='Arial', size=8, wrap=True)
+
+    # ── SLIDE 5: DELIVERABLES ─────────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 5)
+    add_tb_lines(sl, ['Detailed', 'Deliverables'],
+                 ML, CT, SW * 0.5, PptxInches(2.8), font='Impact', size=64)
+    deliverables = sec.get('deliverables', [])
+    if deliverables:
+        add_tb(sl, '\n'.join(f'{i+1}.  {d}' for i, d in enumerate(deliverables)),
+               ML, SH - PptxInches(2.6), SW * 0.52, PptxInches(2.4),
+               font='Arial', size=9, wrap=True)
+    milestones = sec.get('milestones', [])
+    if milestones:
+        add_tb(sl, 'KEY MILESTONES',
+               SW * 0.58, CT, SW * 0.4, PptxInches(0.3),
+               font='Arial', size=6.5, color=C_MUTED, bold=True)
+        add_rect(sl, SW * 0.58, CT + PptxInches(0.32), SW * 0.4, PptxPt(1))
+        add_tb(sl, '\n'.join(f'●  {m}' for m in milestones),
+               SW * 0.58, CT + PptxInches(0.45), SW * 0.4, PptxInches(3.5),
+               font='Arial', size=9, wrap=True)
+
+    # ── SLIDE 6: COST BREAKDOWN ───────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 6)
+    lw = SW * 0.42
+    add_tb_lines(sl, ['Cost', 'Breakdown'],
+                 ML, CT, lw - PptxInches(0.2), PptxInches(2.5), font='Impact', size=56)
+    add_rect(sl, lw, CT, PptxPt(1.5), SH - CT)
+    assump = sec.get('assumptions', [])
+    add_tb(sl, 'Assumptions & Exclusions',
+           ML, PptxInches(3.6), lw - PptxInches(0.2), PptxInches(0.38),
+           font='Arial', size=8.5, bold=True)
+    if assump:
+        add_tb(sl, '\n'.join(f'●  {a}' for a in assump),
+               ML, PptxInches(4.02), lw - PptxInches(0.2),
+               SH - PptxInches(4.25), font='Arial', size=7.5, wrap=True)
+
+    rx  = lw + PptxInches(0.35)
+    rw  = SW - rx - PptxInches(0.25)
+    ry  = CT
+    add_tb(sl, 'COST ESTIMATE', rx, ry, rw * 0.6, PptxInches(0.28),
+           font='Arial', size=6.5, bold=True)
+    add_tb(sl, '£ (GBP)', rx + rw * 0.6, ry, rw * 0.4, PptxInches(0.28),
+           font='Arial', size=6.5, bold=True, align=PP_ALIGN.RIGHT)
+    add_rect(sl, rx, ry + PptxInches(0.3), rw, PptxPt(1.5))
+
+    cy = ry + PptxInches(0.4)
+    for cs in sec.get('cost_sections', []):
+        name   = cs.get('name', '')
+        tasks  = cs.get('tasks', [])
+        team   = cs.get('team', '')
+        dur    = cs.get('duration', '')
+        amount = cs.get('amount', '')
+        add_tb(sl, name,   rx,              cy, rw * 0.65, PptxInches(0.28), font='Arial', size=9, bold=True)
+        add_tb(sl, amount, rx + rw * 0.65, cy, rw * 0.35, PptxInches(0.28), font='Arial', size=9, align=PP_ALIGN.RIGHT)
+        cy += PptxInches(0.3)
+        add_tb(sl, 'Tasks', rx, cy, rw, PptxInches(0.2), font='Arial', size=6.5, color=C_MUTED, bold=True)
+        cy += PptxInches(0.22)
+        add_tb(sl, '\n'.join(f'●  {t}' for t in tasks[:3]), rx, cy, rw, PptxInches(0.5),
+               font='Arial', size=7.5, wrap=True)
+        cy += PptxInches(0.55)
+        if team:
+            add_tb(sl, f'Team   {team}', rx, cy, rw, PptxInches(0.2), font='Arial', size=7, color=C_MUTED)
+            cy += PptxInches(0.22)
+        if dur:
+            add_tb(sl, f'Duration   {dur}', rx, cy, rw, PptxInches(0.2), font='Arial', size=7, color=C_MUTED)
+            cy += PptxInches(0.22)
+        add_rect(sl, rx, cy, rw, PptxPt(0.75), C_LIGHT)
+        cy += PptxInches(0.14)
+
+    total = sec.get('total') or sec.get('investment', '')
+    if total:
+        add_rect(sl, rx, SH - PptxInches(0.88), rw, PptxPt(1.5))
+        add_tb(sl, 'TOTAL', rx, SH - PptxInches(0.78), rw * 0.5, PptxInches(0.55),
+               font='Arial', size=10, bold=True)
+        add_tb(sl, total, rx + rw * 0.5, SH - PptxInches(0.88), rw * 0.5, PptxInches(0.65),
+               font='Impact', size=30, color=C_ACCENT, align=PP_ALIGN.RIGHT)
+
+    # ── SLIDE 7: THANK YOU ────────────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 7)
+    add_tb_lines(sl, ['Thank', 'You'],
+                 ML, CT, SW - ML * 2, PptxInches(3.2), font='Impact', size=110)
+    add_photo_strip(sl, PptxInches(4.95), SH - PptxInches(4.95))
+
+    prs.save(out)
 
 
 def build_estimate(data, out):
@@ -1308,7 +1619,13 @@ def generate():
                 return send_file(out, as_attachment=True, download_name=f'{slug}_sow.docx',
                                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
 
-            elif ftype in ('proposal', 'proposal-docx'):
+            elif ftype in ('proposal', 'proposal-pptx'):
+                out = f'{tmp}/{slug}_proposal.pptx'
+                build_proposal_pptx(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_proposal.pptx',
+                               mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation')
+
+            elif ftype == 'proposal-docx':
                 out = f'{tmp}/{slug}_proposal.docx'
                 build_proposal_docx(data, out)
                 return send_file(out, as_attachment=True, download_name=f'{slug}_proposal.docx',
