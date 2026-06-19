@@ -51,13 +51,16 @@ C_WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
 # AI CALL — model-switchable via env var
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def call_ai(prompt, max_tokens=2000):
+def call_ai(prompt, max_tokens=2000, pdf_path=None):
     """
     Call the configured AI model. Switch by setting AI_PROVIDER env var:
       anthropic  (default) — uses ANTHROPIC_API_KEY
       openai               — uses OPENAI_API_KEY
       gemini               — uses GEMINI_API_KEY
+
+    pdf_path: optional path to a PDF file to include as a document (Anthropic only).
     """
+    import base64
     provider = os.environ.get('AI_PROVIDER', 'anthropic').lower()
 
     if provider == 'openai':
@@ -65,7 +68,7 @@ def call_ai(prompt, max_tokens=2000):
         res = requests.post('https://api.openai.com/v1/chat/completions',
             headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
             json={'model': 'gpt-4o-mini', 'max_tokens': max_tokens,
-                  'messages': [{'role': 'user', 'content': prompt}]}, timeout=60)
+                  'messages': [{'role': 'user', 'content': prompt}]}, timeout=120)
         res.raise_for_status()
         return res.json()['choices'][0]['message']['content']
 
@@ -81,12 +84,11 @@ def call_ai(prompt, max_tokens=2000):
                     'maxOutputTokens': max_tokens,
                     'temperature': 0.4
                 }
-            }, timeout=60)
+            }, timeout=120)
         res.raise_for_status()
         result = res.json()
         candidates = result.get('candidates', [])
         if not candidates:
-            # Gemini returned no candidates — likely blocked by safety filters or hit token limit with no output
             finish_reason = result.get('promptFeedback', {}).get('blockReason', 'unknown')
             raise RuntimeError(f'Gemini returned no candidates (reason: {finish_reason}). Raw response: {result}')
         candidate = candidates[0]
@@ -99,11 +101,37 @@ def call_ai(prompt, max_tokens=2000):
 
     else:  # anthropic (default)
         key = os.environ.get('ANTHROPIC_API_KEY', '')
+        headers = {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+        }
+
+        # Build message content — attach PDF template if provided
+        if pdf_path and os.path.exists(pdf_path):
+            with open(pdf_path, 'rb') as f:
+                pdf_b64 = base64.standard_b64encode(f.read()).decode('utf-8')
+            headers['anthropic-beta'] = 'pdfs-2024-09-25'
+            content = [
+                {
+                    'type': 'document',
+                    'source': {
+                        'type': 'base64',
+                        'media_type': 'application/pdf',
+                        'data': pdf_b64,
+                    },
+                    'title': 'Cyphr Proposal Template',
+                    'context': 'This is the visual and structural template the proposal must follow — slide order, layout, tone, and content format.',
+                },
+                {'type': 'text', 'text': prompt},
+            ]
+        else:
+            content = prompt
+
         res = requests.post('https://api.anthropic.com/v1/messages',
-            headers={'x-api-key': key, 'anthropic-version': '2023-06-01',
-                     'Content-Type': 'application/json'},
+            headers=headers,
             json={'model': 'claude-haiku-4-5-20251001', 'max_tokens': max_tokens,
-                  'messages': [{'role': 'user', 'content': prompt}]}, timeout=60)
+                  'messages': [{'role': 'user', 'content': content}]}, timeout=120)
         res.raise_for_status()
         return res.json()['content'][0]['text']
 
@@ -842,8 +870,9 @@ def build_proposal_pptx(data, out):
             'scope_services':    scope_services,
         }
     else:
-        # No skill output — generate content via AI
-        spec_json = call_ai(proposal_spec(data), max_tokens=3500)
+        # No skill output — generate content via AI with template PDF as visual reference
+        template_pdf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'templates', 'proposal-template.pdf')
+        spec_json = call_ai(proposal_spec(data), max_tokens=3500, pdf_path=template_pdf)
         try:
             sec = parse_json_response(spec_json)
         except Exception as e:
