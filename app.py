@@ -145,8 +145,8 @@ def PH(reason):
 
 REQUIRED = {
     'brief':    ['clientName', 'projectName'],
-    'sow':      ['clientName', 'projectName', 'sowOutput'],
-    'proposal': ['clientName', 'projectName', 'proposalOutput'],
+    'sow':      ['clientName', 'projectName'],
+    'proposal': ['clientName', 'projectName'],
     'estimate': ['clientName', 'projectName'],
     'gantt':    ['clientName', 'projectName'],
 }
@@ -740,6 +740,20 @@ def build_proposal_docx(data, out):
     doc.save(out)
 
 
+def parse_skill_slides(text):
+    """Parse 'SLIDE N — TITLE\nKey: value\n...' skill output into {TITLE: [lines]} dict."""
+    slides = {}
+    current = None
+    for line in text.split('\n'):
+        m = re.match(r'^SLIDE\s+\d+\s*[—\-]+\s*(.+)$', line.strip())
+        if m:
+            current = m.group(1).strip().upper()
+            slides[current] = []
+        elif current and line.strip():
+            slides[current].append(line.strip())
+    return slides
+
+
 def build_proposal_pptx(data, out):
     from pptx import Presentation as PptxPresentation
     from pptx.util import Inches as PptxInches, Pt as PptxPt
@@ -764,20 +778,55 @@ def build_proposal_pptx(data, out):
     C_DARK   = PptxRGB(0x2a, 0x22, 0x18)
     C_LIGHT  = PptxRGB(0xCC, 0xC8, 0xC0)
 
-    # ── AI content ────────────────────────────────────────────────────────────
-    spec_json = call_ai(proposal_spec(data), max_tokens=3500)
-    try:
-        sec = parse_json_response(spec_json)
-    except Exception as e:
-        raise RuntimeError(f'Proposal PPTX: AI response not valid JSON. Raw: {spec_json[:1000]}') from e
+    # ── Content — skill output takes precedence over a fresh AI call ──────────
+    proposal_text = data.get('proposalOutput', '').strip()
+    today = datetime.today().strftime('%d %B %Y')
 
-    issues = verify_output('proposal', sec, data)
-    if issues:
-        print(f'[PROPOSAL PPTX] {issues}')
+    if len(proposal_text) > 200:
+        # Skill has already generated the proposal — parse it directly, no second AI call
+        sl = parse_skill_slides(proposal_text)
+        def _join(key, *fallbacks):
+            for k in (key,) + fallbacks:
+                lines = sl.get(k.upper())
+                if lines:
+                    return ' '.join(lines)
+            return ''
+        def _list(key, *fallbacks):
+            for k in (key,) + fallbacks:
+                lines = sl.get(k.upper())
+                if lines:
+                    return lines
+            return []
+        sec = {
+            'client':            data.get('clientName', 'CLIENT'),
+            'project':           data.get('projectName', 'PROJECT'),
+            'date':              today,
+            'executive_summary': _join('EXECUTIVE SUMMARY', 'COVER'),
+            'opportunity':       _join('THE OPPORTUNITY', 'OPPORTUNITY'),
+            'approach':          _list('OUR APPROACH', 'APPROACH'),
+            'deliverables':      _list('WHAT WE DELIVER', 'DELIVERABLES'),
+            'milestones':        _list('TIMELINE'),
+            'investment':        _join('INVESTMENT'),
+            'why_cyphr':         _join('WHY CYPHR'),
+            'assumptions':       [],
+            'cost_sections':     [],
+            'total':             data.get('budget', ''),
+            'scope_services':    {},
+        }
+    else:
+        # No skill output — generate content via AI
+        spec_json = call_ai(proposal_spec(data), max_tokens=3500)
+        try:
+            sec = parse_json_response(spec_json)
+        except Exception as e:
+            raise RuntimeError(f'Proposal PPTX: AI response not valid JSON. Raw: {spec_json[:1000]}') from e
+        issues = verify_output('proposal', sec, data)
+        if issues:
+            print(f'[PROPOSAL PPTX] {issues}')
 
     client  = sec.get('client',  data.get('clientName', 'CLIENT'))
     project = sec.get('project', data.get('projectName', 'PROJECT'))
-    today   = sec.get('date',    datetime.today().strftime('%d %B %Y'))
+    today   = sec.get('date', today)
 
     # ── Presentation ──────────────────────────────────────────────────────────
     prs   = PptxPresentation()
@@ -1596,7 +1645,13 @@ Rules:
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'provider': os.environ.get('AI_PROVIDER','anthropic')})
+    provider = os.environ.get('AI_PROVIDER', 'anthropic')
+    key_set = bool(
+        os.environ.get('ANTHROPIC_API_KEY') or
+        os.environ.get('GEMINI_API_KEY') or
+        os.environ.get('OPENAI_API_KEY')
+    )
+    return jsonify({'status': 'ok', 'provider': provider, 'api_key_set': key_set})
 
 @app.route('/generate', methods=['POST','OPTIONS'])
 def generate():
