@@ -1700,6 +1700,111 @@ Rules:
 # ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+STATIC_BENCHMARKS = [
+    {'metric': 'conversion_rate',       'benchmark': 4.5,  'label': '3–6%',               'source': 'Retail AI Benchmark Report 2024',    'url': ''},
+    {'metric': 'engagement_rate',       'benchmark': 35.0, 'label': '30–40%',              'source': 'Gartner Digital Kiosk Study 2024',   'url': ''},
+    {'metric': 'avg_turns',             'benchmark': 4.2,  'label': '3–5 interactions',    'source': 'Salesforce State of Commerce 2024',  'url': ''},
+    {'metric': 'competitor_retention',  'benchmark': 12.0, 'label': '10–15%',              'source': 'McKinsey Retail Loyalty Report 2024','url': ''},
+]
+
+METRIC_LABELS = {
+    'conversion_rate':      'Conversion rate',
+    'engagement_rate':      'Engagement rate',
+    'avg_turns':            'Avg interactions per session',
+    'competitor_retention': 'Competitor-mention-to-Samsung conversion',
+}
+
+def build_wins(our_metrics, benchmarks):
+    import math
+    wins = []
+    metric_map = {
+        'conversion_rate':      our_metrics.get('conversionRate', 0),
+        'engagement_rate':      our_metrics.get('engagementRate', 0),
+        'avg_turns':            our_metrics.get('avgTurns', 0),
+        'competitor_retention': our_metrics.get('competitorRetention', 0),
+    }
+    for b in benchmarks:
+        key = b['metric']
+        our_val = metric_map.get(key)
+        bench_val = b['benchmark']
+        if our_val is None or bench_val == 0:
+            continue
+        if our_val <= bench_val:
+            continue
+        multiplier = round(our_val / bench_val, 1) if bench_val else None
+        label = METRIC_LABELS.get(key, key.replace('_', ' ').title())
+        source = b.get('source', '')
+        talking = f"Blarney delivered {our_val}% in the Samsung kiosk UT pilot"
+        if multiplier and multiplier >= 1.2:
+            talking += f" — {multiplier}× the industry average of {b['label']}"
+        else:
+            talking += f" — above the industry average of {b['label']}"
+        if source:
+            talking += f" ({source})"
+        wins.append({
+            'metric': key,
+            'metric_name': label,
+            'our_value': f"{our_val}{'%' if 'rate' in key or 'retention' in key else ''}",
+            'benchmark_value': b['label'],
+            'multiplier': multiplier,
+            'is_win': True,
+            'talking_point': talking,
+            'source_name': source,
+            'source_url': b.get('url', ''),
+            'source_date': '2024',
+        })
+    return wins
+
+
+@app.route('/benchmarks', methods=['POST', 'OPTIONS'])
+def benchmarks():
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        return resp
+
+    gemini_key = os.environ.get('GEMINI_KEY', '')
+    data = request.get_json(force=True, silent=True) or {}
+    our_metrics = data.get('metrics', {})
+
+    fetched_benchmarks = None
+    if gemini_key:
+        import urllib.request, json as _json
+        prompt = (
+            "You are a retail industry analyst. Search for the most current (2024–2025) "
+            "published benchmark data for these metrics in retail conversational AI and in-store digital kiosks:\n"
+            "1. Conversion rate for retail digital touchpoints / kiosks\n"
+            "2. Engagement rate (% of visitors who interact with the kiosk)\n"
+            "3. Average number of customer interactions per conversational AI session in retail\n"
+            "4. Retention rate: customers who considered a competitor product but still purchased the primary brand\n\n"
+            "Return ONLY a JSON array. Each object must have: "
+            "metric (one of: conversion_rate, engagement_rate, avg_turns, competitor_retention), "
+            "benchmark (numeric midpoint value), label (range string e.g. '3-6%'), "
+            "source (publication or org name), url (source URL or empty string), date (year or month/year).\n"
+            "No markdown, no explanation — raw JSON array only."
+        )
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
+        payload = _json.dumps({
+            'contents': [{'parts': [{'text': prompt}]}],
+            'tools': [{'google_search': {}}],
+            'generationConfig': {'temperature': 0.1}
+        }).encode()
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = _json.loads(resp.read())
+            raw = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '[]')
+            raw = raw.strip().lstrip('`').rstrip('`')
+            if raw.startswith('json'):
+                raw = raw[4:]
+            fetched_benchmarks = _json.loads(raw)
+        except Exception as e:
+            fetched_benchmarks = None  # fall through to static
+
+    benchmarks_to_use = fetched_benchmarks if fetched_benchmarks else STATIC_BENCHMARKS
+    wins = build_wins(our_metrics, benchmarks_to_use)
+    return jsonify(wins)
+
+
 @app.route('/ai-flag', methods=['POST','OPTIONS'])
 def ai_flag():
     if request.method == 'OPTIONS':
