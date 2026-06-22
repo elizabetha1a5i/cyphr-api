@@ -1703,7 +1703,8 @@ Rules:
 @app.route('/ai-flag', methods=['POST','OPTIONS'])
 def ai_flag():
     if request.method == 'OPTIONS':
-        return '', 204
+        resp = app.make_default_options_response()
+        return resp
 
     gemini_key = os.environ.get('GEMINI_KEY', '')
     if not gemini_key:
