@@ -1714,7 +1714,7 @@ def ai_flag():
     if not transcripts:
         return jsonify([])
 
-    gemini_model = 'gemini-2.5-flash'
+    gemini_model = 'gemini-3.5-flash-preview'
 
     tx_block = '\n\n'.join(
         f"--- SESSION {i+1} | ID:{s.get('Session ID','?')} | Date:{s.get('Date','?')} | Mode:{s.get('Mode','?')} ---\n{(s.get('Transcript','') or '')[:3000]}"
