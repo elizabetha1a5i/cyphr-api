@@ -1714,7 +1714,7 @@ def ai_flag():
     if not transcripts:
         return jsonify([])
 
-    gemini_model = 'gemini-3.5-flash'
+    gemini_model = 'gemini-2.5-flash'
 
     tx_block = '\n\n'.join(
         f"--- SESSION {i+1} | ID:{s.get('Session ID','?')} | Date:{s.get('Date','?')} | Mode:{s.get('Mode','?')} ---\n{(s.get('Transcript','') or '')[:3000]}"
@@ -1756,9 +1756,21 @@ def ai_flag():
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = _json.loads(resp.read())
         raw = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '[]')
-        ai_flags = _json.loads(raw)
+        # Strip markdown code fences if model wraps JSON in them
+        raw = raw.strip()
+        if raw.startswith('```'):
+            raw = '\n'.join(raw.split('\n')[1:])
+        if raw.endswith('```'):
+            raw = raw.rsplit('```', 1)[0]
+        try:
+            ai_flags = _json.loads(raw)
+        except Exception:
+            ai_flags = []
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        return jsonify({'error': f'Gemini HTTP {e.code}: {body}', 'model': gemini_model}), 502
     except Exception as e:
-        return jsonify({'error': str(e)}), 502
+        return jsonify({'error': str(e), 'model': gemini_model}), 502
 
     return jsonify(ai_flags)
 
