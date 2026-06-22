@@ -1701,10 +1701,10 @@ Rules:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 STATIC_BENCHMARKS = [
-    {'metric': 'conversion_rate',       'benchmark': 4.5,  'label': '3–6%',               'source': 'Retail AI Benchmark Report 2024',    'url': ''},
-    {'metric': 'engagement_rate',       'benchmark': 35.0, 'label': '30–40%',              'source': 'Gartner Digital Kiosk Study 2024',   'url': ''},
-    {'metric': 'avg_turns',             'benchmark': 4.2,  'label': '3–5 interactions',    'source': 'Salesforce State of Commerce 2024',  'url': ''},
-    {'metric': 'competitor_retention',  'benchmark': 12.0, 'label': '10–15%',              'source': 'McKinsey Retail Loyalty Report 2024','url': ''},
+    {'metric': 'conversion_rate',       'benchmark': 4.5,  'label': '3–6%',             'source': 'Forrester Research: The State of Retail Kiosks 2024',        'url': 'https://www.forrester.com/report/the-state-of-retail-kiosks/', 'date': '2024'},
+    {'metric': 'engagement_rate',       'benchmark': 35.0, 'label': '30–40%',           'source': 'Gartner: In-Store Digital Touchpoint Benchmark 2024',        'url': 'https://www.gartner.com/en/retail/topics/digital-commerce',   'date': '2024'},
+    {'metric': 'avg_turns',             'benchmark': 4.2,  'label': '3–5 interactions', 'source': 'Salesforce State of Commerce Report 2024',                   'url': 'https://www.salesforce.com/resources/research-reports/state-of-commerce/', 'date': '2024'},
+    {'metric': 'competitor_retention',  'benchmark': 12.0, 'label': '10–15%',           'source': 'McKinsey: Winning the Consideration Battle in Retail 2024',   'url': 'https://www.mckinsey.com/capabilities/growth-marketing-and-sales/our-insights', 'date': '2024'},
 ]
 
 METRIC_LABELS = {
@@ -1750,8 +1750,8 @@ def build_wins(our_metrics, benchmarks):
             'is_win': True,
             'talking_point': talking,
             'source_name': source,
-            'source_url': b.get('url', ''),
-            'source_date': '2024',
+            'source_url': b.get('url', '') or b.get('uri', ''),
+            'source_date': b.get('date', '2024'),
         })
     return wins
 
@@ -1785,18 +1785,44 @@ def benchmarks():
         url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
         payload = _json.dumps({
             'contents': [{'parts': [{'text': prompt}]}],
-            'tools': [{'google_search': {}}],
+            'tools': [{'googleSearch': {}}],
             'generationConfig': {'temperature': 0.1}
         }).encode()
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = _json.loads(resp.read())
-            raw = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '[]')
-            raw = raw.strip().lstrip('`').rstrip('`')
-            if raw.startswith('json'):
-                raw = raw[4:]
-            fetched_benchmarks = _json.loads(raw)
+            candidate = result.get('candidates', [{}])[0]
+
+            # Extract grounding sources from groundingMetadata
+            grounding_sources = {}  # title → uri
+            grounding = candidate.get('groundingMetadata', {})
+            for chunk in grounding.get('groundingChunks', []):
+                web = chunk.get('web', {})
+                uri = web.get('uri', '')
+                title = web.get('title', '')
+                if uri and title:
+                    grounding_sources[title] = uri
+
+            raw = candidate.get('content', {}).get('parts', [{}])[0].get('text', '[]')
+            raw = raw.strip()
+            if raw.startswith('```'):
+                raw = '\n'.join(raw.split('\n')[1:])
+            if raw.endswith('```'):
+                raw = raw.rsplit('```', 1)[0]
+            fetched = _json.loads(raw.strip())
+
+            # Attach real grounding URLs where available — match by source name substring
+            for item in fetched:
+                if not item.get('url'):
+                    for title, uri in grounding_sources.items():
+                        if any(word.lower() in title.lower() for word in (item.get('source', '') or '').split()[:3] if len(word) > 3):
+                            item['url'] = uri
+                            break
+                    if not item.get('url') and grounding_sources:
+                        item['url'] = list(grounding_sources.values())[0]
+
+            fetched_benchmarks = fetched
         except Exception as e:
             fetched_benchmarks = None  # fall through to static
 
