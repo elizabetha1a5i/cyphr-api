@@ -1938,11 +1938,13 @@ def benchmarks():
                 results = brave_search(item['query'], brave_key)
                 if not results:
                     return None
+                # Use top 3 snippets directly — no scraping needed
+                snippets = '\n\n'.join(
+                    f"Source: {r['title']}\nURL: {r['url']}\nExcerpt: {r['snippet']}"
+                    for r in results[:3]
+                )
                 top = results[0]
-                scraped = scrape_for_stat(top['url'], metric, sg_key)
-                if not scraped:
-                    return None
-                analysis = gemini_extract(scraped, metric, our_metrics, top['url'], top['title'], gemini_key)
+                analysis = gemini_extract(snippets, metric, our_metrics, top['url'], top['title'], gemini_key)
                 if analysis.get('is_win') and analysis.get('benchmark_value') and top['url']:
                     label = METRIC_LABELS.get(metric, metric.replace('_', ' ').title())
                     return {
