@@ -1101,15 +1101,14 @@ def build_proposal_pptx(data, out):
     add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
     body = sec.get('executive_summary', '')
     if body:
-        # Three evenly-spaced paragraphs like slide 32
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', body) if s.strip()]
         chunk     = max(1, len(sentences) // 3)
         paras     = [' '.join(sentences[i:i+chunk]) for i in range(0, len(sentences), chunk)][:3]
-        py = CT + PptxInches(1.7)
-        ph = (SH - py - PptxInches(0.3)) / max(len(paras), 1)
+        py = CT + PptxInches(1.8)
+        ph = (SH - py - PptxInches(0.4)) / max(len(paras), 1)
         for para in paras:
-            add_tb(sl, para, SW * 0.42, py, SW * 0.54, ph,
-                   font='Messina Sans', size=10, wrap=True)
+            add_tb(sl, para, ML, py, SW - ML * 2, ph,
+                   font='Messina Sans', size=13, wrap=True)
             py += ph
 
     # ── SLIDE 3: THE ASK ──────────────────────────────────────────────────────
@@ -1121,21 +1120,23 @@ def build_proposal_pptx(data, out):
     add_tb(sl, 'The Ask',
            ML, CT, SW * 0.38, PptxInches(1.6),
            font='Bandit Condensed', size=72, color=C_INK)
-    if opp:
-        add_tb(sl, opp, ML, CT + PptxInches(1.7), SW * 0.36, PptxInches(1.0),
-               font='Messina Sans', size=10, color=C_INK, wrap=True)
     add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
-    # Numbered [01][02][03] items right column
+    if opp:
+        add_tb(sl, opp, ML, CT + PptxInches(1.8), SW * 0.36, PptxInches(1.2),
+               font='Messina Sans', size=12, color=C_INK, wrap=True)
+    # Numbered [01][02][03] items right column — start below rule
     items3 = approach[:3] if approach else []
     if items3:
         col_x = SW * 0.42
-        col_w = (SW - col_x - PptxInches(0.3)) / max(len(items3), 1)
+        col_w = (SW - col_x - PptxInches(0.4)) / max(len(items3), 1)
+        iy = CT + PptxInches(1.8)
+        ih = SH - iy - PptxInches(0.4)
         for i, item in enumerate(items3):
             ix = col_x + col_w * i
-            add_tb(sl, f'[0{i+1}]', ix, CT, col_w - PptxInches(0.1), PptxInches(0.35),
-                   font='Messina Sans', size=9, bold=True, color=C_INK)
-            add_tb(sl, item, ix, CT + PptxInches(0.38), col_w - PptxInches(0.1),
-                   SH - CT - PptxInches(0.6), font='Messina Sans', size=9, wrap=True)
+            add_tb(sl, f'[0{i+1}]', ix, iy, col_w - PptxInches(0.15), PptxInches(0.4),
+                   font='Messina Sans', size=11, bold=True, color=C_INK)
+            add_tb(sl, item, ix, iy + PptxInches(0.45), col_w - PptxInches(0.15),
+                   ih - PptxInches(0.45), font='Messina Sans', size=11, wrap=True)
 
     # ── SLIDE 4: SCOPE + SERVICES ─────────────────────────────────────────────
     # Template slide 42: "We cover all your needs" + [01]–[06] capability grid
@@ -1166,12 +1167,12 @@ def build_proposal_pptx(data, out):
         cx  = gx + cw * col
         cy  = CT + PptxInches(1.5) + ch * row
         # Numbered label
-        add_tb(sl, f'[0{i+1}]  {cat}', cx + PptxInches(0.12), cy + PptxInches(0.08),
-               cw - PptxInches(0.18), PptxInches(0.28),
-               font='Messina Sans', size=8, bold=True)
+        add_tb(sl, f'[0{i+1}]  {cat}', cx + PptxInches(0.12), cy + PptxInches(0.1),
+               cw - PptxInches(0.18), PptxInches(0.35),
+               font='Messina Sans', size=10, bold=True)
         add_tb(sl, '\n'.join(items[:3]), cx + PptxInches(0.12),
-               cy + PptxInches(0.38), cw - PptxInches(0.18),
-               ch - PptxInches(0.5), font='Messina Sans', size=8, wrap=True)
+               cy + PptxInches(0.48), cw - PptxInches(0.18),
+               ch - PptxInches(0.6), font='Messina Sans', size=10, wrap=True)
         # Thin divider between rows
         if row > 0:
             add_rect(sl, gx, cy, gw, PptxPt(0.5), C_INK)
@@ -1193,27 +1194,27 @@ def build_proposal_pptx(data, out):
         col_w = (SW * 0.45) / max(len(d_items[:3]), 1)
         for i, d in enumerate(d_items[:3]):
             ix = col_x + col_w * i
-            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(1.7),
-                   col_w - PptxInches(0.08), PptxInches(0.3),
-                   font='Messina Sans', size=8, bold=True)
-            add_tb(sl, d, ix, CT + PptxInches(2.1), col_w - PptxInches(0.08),
-                   PptxInches(1.8), font='Messina Sans', size=8, wrap=True)
+            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(1.8),
+                   col_w - PptxInches(0.08), PptxInches(0.36),
+                   font='Messina Sans', size=10, bold=True)
+            add_tb(sl, d, ix, CT + PptxInches(2.2), col_w - PptxInches(0.08),
+                   PptxInches(1.6), font='Messina Sans', size=10, wrap=True)
         for i, d in enumerate(d_items[3:], 3):
             col2 = i - 3
             ix   = col_x + col_w * col2
-            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(4.1),
-                   col_w - PptxInches(0.08), PptxInches(0.3),
-                   font='Messina Sans', size=8, bold=True)
-            add_tb(sl, d, ix, CT + PptxInches(4.5), col_w - PptxInches(0.08),
-                   PptxInches(1.0), font='Messina Sans', size=8, wrap=True)
+            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(4.0),
+                   col_w - PptxInches(0.08), PptxInches(0.36),
+                   font='Messina Sans', size=10, bold=True)
+            add_tb(sl, d, ix, CT + PptxInches(4.4), col_w - PptxInches(0.08),
+                   PptxInches(1.1), font='Messina Sans', size=10, wrap=True)
     if milestones:
         rx5 = SW * 0.50
         rw5 = SW - rx5 - PptxInches(0.25)
-        add_tb(sl, 'KEY MILESTONES', rx5, CT + PptxInches(1.7), rw5, PptxInches(0.28),
-               font='Messina Sans', size=7, color=C_MUTED, bold=True)
+        add_tb(sl, 'KEY MILESTONES', rx5, CT + PptxInches(1.8), rw5, PptxInches(0.32),
+               font='Messina Sans', size=9, color=C_MUTED, bold=True)
         add_tb(sl, '\n'.join(f'— {m}' for m in milestones),
-               rx5, CT + PptxInches(2.1), rw5, SH - CT - PptxInches(2.4),
-               font='Messina Sans', size=9, wrap=True)
+               rx5, CT + PptxInches(2.2), rw5, SH - CT - PptxInches(2.5),
+               font='Messina Sans', size=11, wrap=True)
 
     # ── SLIDE 6: COST BREAKDOWN ───────────────────────────────────────────────
     # Template slide 48: "Costs breakdown" title left, phase table right
@@ -1253,26 +1254,26 @@ def build_proposal_pptx(data, out):
         dur    = cs.get('duration', '')
         add_rect(sl, rx, cy, rw, PptxPt(0.5), C_MUTED)
         cy += PptxInches(0.1)
-        add_tb(sl, name, rx, cy, rw * 0.72, PptxInches(0.3),
-               font='Messina Sans', size=9, bold=True)
+        add_tb(sl, name, rx, cy, rw * 0.72, PptxInches(0.36),
+               font='Messina Sans', size=11, bold=True)
         if dur:
-            add_tb(sl, dur, rx, cy + PptxInches(0.3), rw * 0.72, PptxInches(0.22),
-                   font='Messina Sans', size=7.5, color=C_MUTED)
-        add_tb(sl, amount, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.3),
-               font='Messina Sans', size=9, bold=True, align=PP_ALIGN.RIGHT)
-        row_h = PptxInches(0.58) if not dur else PptxInches(0.72)
+            add_tb(sl, dur, rx, cy + PptxInches(0.38), rw * 0.72, PptxInches(0.26),
+                   font='Messina Sans', size=9, color=C_MUTED)
+        add_tb(sl, amount, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.36),
+               font='Messina Sans', size=11, bold=True, align=PP_ALIGN.RIGHT)
+        row_h = PptxInches(0.62) if not dur else PptxInches(0.78)
         cy += row_h
 
     total = sec.get('total') or sec.get('investment', '')
     add_rect(sl, rx, cy, rw, PptxPt(1.0), C_INK)
     cy += PptxInches(0.12)
-    add_tb(sl, 'Total Ballpark Range', rx, cy, rw * 0.72, PptxInches(0.32),
-           font='Messina Sans', size=9, bold=True)
+    add_tb(sl, 'Total Ballpark Range', rx, cy, rw * 0.72, PptxInches(0.36),
+           font='Messina Sans', size=11, bold=True)
     if total:
-        add_tb(sl, total, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.32),
-               font='Messina Sans', size=9, bold=True, align=PP_ALIGN.RIGHT)
-    add_tb(sl, '(estimated)', rx, cy + PptxInches(0.32), rw, PptxInches(0.25),
-           font='Messina Sans', size=7.5, color=C_MUTED)
+        add_tb(sl, total, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.36),
+               font='Messina Sans', size=11, bold=True, align=PP_ALIGN.RIGHT)
+    add_tb(sl, '(estimated)', rx, cy + PptxInches(0.38), rw, PptxInches(0.28),
+           font='Messina Sans', size=9, color=C_MUTED)
 
     # ── SLIDE 7: WHY CYPHR ───────────────────────────────────────────────────
     # Blue divider-style slide (template slide 2 style) + body text
@@ -1284,8 +1285,8 @@ def build_proposal_pptx(data, out):
            font='Bandit Condensed', size=72, color=C_INK)
     add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
     if why:
-        add_tb(sl, why, SW * 0.42, CT, SW * 0.54, SH - CT - PptxInches(0.3),
-               font='Messina Sans', size=11, wrap=True)
+        add_tb(sl, why, ML, CT + PptxInches(1.8), SW - ML * 2, SH - CT - PptxInches(2.2),
+               font='Messina Sans', size=13, wrap=True)
     add_rect(sl, SW * 0.40, CT + PptxInches(1.5), PptxPt(0.5), SH - CT - PptxInches(1.5), C_INK)
 
     # ── SLIDE 8: THANK YOU ────────────────────────────────────────────────────
