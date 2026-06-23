@@ -829,11 +829,11 @@ def build_proposal_pptx(data, out):
     # ── Colours ───────────────────────────────────────────────────────────────
     C_BG     = PptxRGB(0xE9, 0xE5, 0xDC)
     C_INK    = PptxRGB(0x11, 0x11, 0x11)
-    C_ACCENT = PptxRGB(0x2B, 0x28, 0xF5)
+    C_ACCENT = PptxRGB(0x23, 0x23, 0xCC)  # Cyphr electric blue
     C_MUTED  = PptxRGB(0x88, 0x80, 0x78)
     C_RULE   = PptxRGB(0x11, 0x11, 0x11)
-    C_DARK   = PptxRGB(0x2a, 0x22, 0x18)
-    C_LIGHT  = PptxRGB(0xCC, 0xC8, 0xC0)
+    C_DARK   = PptxRGB(0x07, 0x08, 0x09)
+    C_LIGHT  = PptxRGB(0xEA, 0xEA, 0xFF)  # electric blue light tint
 
     # ── Content — skill output takes precedence over a fresh AI call ──────────
     proposal_text = data.get('proposalOutput', '').strip()
@@ -1005,42 +1005,46 @@ def build_proposal_pptx(data, out):
                     continue
                 except Exception:
                     pass
-            add_rect(slide, x, y, pw, h, C_DARK)
+            # Placeholder: dark brand colour (intentional design block, not broken image)
+            add_rect(slide, x, y, pw, h, PptxRGB(0x1A, 0x1A, 0x18))
 
     # ── SLIDE 1: COVER ────────────────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
     add_header(sl, 1)
+    # Scale font size to avoid overflow on long client names
+    cover_font = 80 if len(client) > 18 else 100 if len(client) > 12 else 120
     add_tb(sl, client.upper(),
-           ML, PptxInches(0.82), SW - ML * 2, PptxInches(3.2),
-           font='Impact', size=120)
+           ML, PptxInches(0.82), SW - ML * 2, PptxInches(2.9),
+           font='Impact', size=cover_font)
     add_tb_lines(sl, [project.upper(), 'Proposal'],
-                 ML, PptxInches(4.05), PptxInches(9), PptxInches(1.4),
-                 font='Impact', size=28)
-    add_photo_strip(sl, PptxInches(4.95), SH - PptxInches(4.95))
+                 ML, PptxInches(3.85), PptxInches(9), PptxInches(0.9),
+                 font='Impact', size=24)
+    add_photo_strip(sl, PptxInches(4.88), SH - PptxInches(4.88))
 
     # ── SLIDE 2: EXECUTIVE SUMMARY ────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
     add_header(sl, 2)
     add_tb_lines(sl, ['Executive', 'Summary'],
-                 ML, CT, SW * 0.58, PptxInches(3.6), font='Impact', size=80)
+                 ML, CT, SW * 0.42, PptxInches(3.2), font='Impact', size=72)
     body = sec.get('executive_summary', '')
     if body:
-        add_tb(sl, body, ML, SH - PptxInches(1.55), SW * 0.68, PptxInches(1.35),
-               font='Arial', size=10)
+        add_tb(sl, body, SW * 0.46, CT, SW * 0.5, SH - CT - PptxInches(0.3),
+               font='Arial', size=11, wrap=True)
 
     # ── SLIDE 3: THE ASK ──────────────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
     add_header(sl, 3)
-    add_tb(sl, 'The Ask', ML, CT, SW * 0.58, PptxInches(3), font='Impact', size=80)
+    add_tb(sl, 'The Ask', ML, CT, SW * 0.38, PptxInches(2.4), font='Impact', size=72)
     opp      = sec.get('opportunity', '')
     approach = sec.get('approach', [])
-    ay = SH - PptxInches(2.4)
+    rx3 = SW * 0.42
+    rw3 = SW - rx3 - PptxInches(0.3)
     if opp:
-        add_tb(sl, opp, ML, ay, SW * 0.65, PptxInches(0.65), font='Arial', size=9.5)
-        ay += PptxInches(0.7)
+        add_tb(sl, opp, rx3, CT, rw3, PptxInches(1.4), font='Arial', size=11, wrap=True)
     if approach:
+        ay = CT + PptxInches(1.5) if opp else CT
         add_tb(sl, '\n'.join(f'●  {a}' for a in approach),
-               ML, ay, SW * 0.65, PptxInches(1.5), font='Arial', size=9, wrap=True)
+               rx3, ay, rw3, SH - ay - PptxInches(0.3), font='Arial', size=10, wrap=True)
 
     # ── SLIDE 4: SCOPE + SERVICES ─────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
@@ -1051,12 +1055,12 @@ def build_proposal_pptx(data, out):
            ML, PptxInches(3.6), PptxInches(5), PptxInches(0.55),
            font='Arial', size=9, color=C_MUTED)
 
-    scope = sec.get('scope_services', {
+    scope = sec.get('scope_services') or {
         'Strategy & Venture':    ['IP development & product creation', 'Joint ventures & partnerships', 'Venture studio model'],
         'Product Design & Build':['User research & usability testing', 'UX/UI design', 'Front-end/back-end development'],
         'Marketing':             ['Marketing strategy & planning', 'Fan lifecycle marketing', 'Campaign activation'],
         'Data & Insights':       ['Audience segmentation', 'Data & performance analytics', 'Predictive insights'],
-    })
+    }
     cats  = list(scope.items())[:4]
     gx    = SW * 0.38
     gw    = SW - gx
@@ -1081,21 +1085,22 @@ def build_proposal_pptx(data, out):
     sl = prs.slides.add_slide(blank)
     add_header(sl, 5)
     add_tb_lines(sl, ['Detailed', 'Deliverables'],
-                 ML, CT, SW * 0.5, PptxInches(2.8), font='Impact', size=64)
-    deliverables = sec.get('deliverables', [])
+                 ML, CT, SW * 0.38, PptxInches(2.4), font='Impact', size=60)
+    deliverables = sec.get('deliverables') or []
     if deliverables:
         add_tb(sl, '\n'.join(f'{i+1}.  {d}' for i, d in enumerate(deliverables)),
-               ML, SH - PptxInches(2.6), SW * 0.52, PptxInches(2.4),
-               font='Arial', size=9, wrap=True)
-    milestones = sec.get('milestones', [])
+               ML, CT + PptxInches(2.5), SW * 0.38, SH - CT - PptxInches(2.8),
+               font='Arial', size=10, wrap=True)
+    milestones = sec.get('milestones') or []
     if milestones:
-        add_tb(sl, 'KEY MILESTONES',
-               SW * 0.58, CT, SW * 0.4, PptxInches(0.3),
-               font='Arial', size=6.5, color=C_MUTED, bold=True)
-        add_rect(sl, SW * 0.58, CT + PptxInches(0.32), SW * 0.4, PptxPt(1))
+        rx5 = SW * 0.42
+        rw5 = SW - rx5 - PptxInches(0.3)
+        add_tb(sl, 'KEY MILESTONES', rx5, CT, rw5, PptxInches(0.28),
+               font='Arial', size=7, color=C_MUTED, bold=True)
+        add_rect(sl, rx5, CT + PptxInches(0.3), rw5, PptxPt(1))
         add_tb(sl, '\n'.join(f'●  {m}' for m in milestones),
-               SW * 0.58, CT + PptxInches(0.45), SW * 0.4, PptxInches(3.5),
-               font='Arial', size=9, wrap=True)
+               rx5, CT + PptxInches(0.42), rw5, SH - CT - PptxInches(0.6),
+               font='Arial', size=10, wrap=True)
 
     # ── SLIDE 6: COST BREAKDOWN ───────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
@@ -1221,7 +1226,7 @@ def build_estimate(data, out):
     # ── title block ───────────────────────────────────────────────────────────
     ws.merge_cells('A1:E1')
     ws['A1'] = 'Cyphr Cost Estimate'
-    s(ws['A1'], bold=True, size=16, color='5B4FD9')
+    s(ws['A1'], bold=True, size=16, color='2323CC')
     ws.row_dimensions[1].height = 30
 
     ws.merge_cells('A2:E2')
@@ -1232,7 +1237,7 @@ def build_estimate(data, out):
     # ── summary panel (right side, rows 1–10) ─────────────────────────────────
     def sp(r, label, val=None, is_pct=False, is_gbp=False, bold=False, header=False):
         lc = ws.cell(row=r, column=13, value=label)
-        s(lc, bold=bold or header, color='5B4FD9' if header else '1F1F1F', size=9)
+        s(lc, bold=bold or header, color='2323CC' if header else '1F1F1F', size=9)
         if val is not None:
             vc = ws.cell(row=r, column=14, value=val)
             s(vc, bold=bold, align='right', size=9)
@@ -1287,7 +1292,7 @@ def build_estimate(data, out):
         # Phase header
         ws.merge_cells(f'A{row}:E{row}')
         c = ws.cell(row=row, column=1, value=phase_name)
-        s(c, bold=True, bg='E8E5FF', color='5B4FD9', size=10)
+        s(c, bold=True, bg='E8E5FF', color='2323CC', size=10)
         ws.row_dimensions[row].height = 18
         row += 1
 
@@ -1385,7 +1390,7 @@ def build_estimate(data, out):
                                    ('Exclusions',  sec.get('exclusions',  []))]:
         ws.merge_cells(f'A{row}:E{row}')
         c = ws.cell(row=row, column=1, value=section_label)
-        s(c, bold=True, size=10, color='5B4FD9')
+        s(c, bold=True, size=10, color='2323CC')
         row += 1
         for item in items:
             ws.merge_cells(f'A{row}:E{row}')
@@ -1399,14 +1404,14 @@ def build_estimate(data, out):
     ts = wb.create_sheet('Timings + Deliverables')
     ts.column_dimensions['A'].width = 36
     ts['A1'] = 'Timeline'
-    ts['A1'].font = Font(name='Arial', bold=True, size=14, color='5B4FD9')
+    ts['A1'].font = Font(name='Arial', bold=True, size=14, color='2323CC')
     ts.row_dimensions[1].height = 26
 
     week_cols = list(range(2, 14))  # B–M = weeks 1–12
     for i, wc in enumerate(week_cols, 1):
         c = ts.cell(row=2, column=wc, value=f'Week {i}')
         c.font = Font(name='Arial', bold=True, size=9, color='FFFFFF')
-        c.fill = PatternFill('solid', fgColor='5B4FD9')
+        c.fill = PatternFill('solid', fgColor='2323CC')
         c.alignment = Alignment(horizontal='center', vertical='center')
         ts.column_dimensions[get_column_letter(wc)].width = 8
 
@@ -1414,8 +1419,8 @@ def build_estimate(data, out):
     for phase in phases:
         phase_name = phase.get('name', 'Phase')
         c = ts.cell(row=t_row, column=1, value=phase_name)
-        c.font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
-        c.fill = PatternFill('solid', fgColor='E8E5FF')
+        c.font = Font(name='Arial', bold=True, size=10, color='2323CC')
+        c.fill = PatternFill('solid', fgColor='EAEAFF')
         ts.merge_cells(f'A{t_row}:M{t_row}')
         ts.row_dimensions[t_row].height = 18
         t_row += 1
@@ -1430,7 +1435,7 @@ def build_estimate(data, out):
 
     # Deliverables section
     t_row += 1
-    ts.cell(row=t_row, column=1, value='Deliverables').font = Font(name='Arial', bold=True, size=10, color='5B4FD9')
+    ts.cell(row=t_row, column=1, value='Deliverables').font = Font(name='Arial', bold=True, size=10, color='2323CC')
     t_row += 1
     all_deliverables = []
     for phase in phases:
@@ -1444,7 +1449,7 @@ def build_estimate(data, out):
     # ── Rate card sheet ───────────────────────────────────────────────────────
     rc = wb.create_sheet('Rate Card')
     rc['A1'] = 'Cyphr Rate Card'
-    rc['A1'].font = Font(name='Arial', bold=True, size=12, color='5B4FD9')
+    rc['A1'].font = Font(name='Arial', bold=True, size=12, color='2323CC')
     rc.merge_cells('A1:B1')
     rc.row_dimensions[1].height = 24
 
@@ -1458,7 +1463,7 @@ def build_estimate(data, out):
     for cat, keys in categories.items():
         c = rc.cell(row=rc_row, column=1, value=cat)
         c.font = Font(name='Arial', bold=True, size=10, color='FFFFFF')
-        c.fill = PatternFill('solid', fgColor='5B4FD9')
+        c.fill = PatternFill('solid', fgColor='2323CC')
         rc.merge_cells(f'A{rc_row}:B{rc_row}')
         rc.row_dimensions[rc_row].height = 18
         rc_row += 1
@@ -1684,7 +1689,7 @@ Rules:
         milestone = phase.get('milestone', '')
 
         # Phase header row
-        safe_write(row, 1, f'  {phase_name.upper()}', bold=True, color='5B4FD9')
+        safe_write(row, 1, f'  {phase_name.upper()}', bold=True, color='2323CC')
         row += 1
 
         # Task rows
@@ -1699,12 +1704,12 @@ Rules:
         if milestone:
             safe_write(row, 1, '🚩')
             safe_write(row, 2, phase_name)
-            safe_write(row, 3, f'✦ {milestone}', bold=True, color='5B4FD9')
+            safe_write(row, 3, f'✦ {milestone}', bold=True, color='2323CC')
             safe_write(row, 6, False)
             # Mark in first available week col for this phase
             milestone_col_idx = min(phase_idx * 2, len(week_cols) - 1)
             if week_cols and milestone_col_idx < len(week_cols):
-                safe_write(row, week_cols[milestone_col_idx], '◆', bold=True, color='5B4FD9')
+                safe_write(row, week_cols[milestone_col_idx], '◆', bold=True, color='2323CC')
             row += 1
 
         row += 1  # blank row between phases
