@@ -1923,27 +1923,29 @@ def benchmarks():
 
     wins = []
     if brave_key and sg_key and gemini_key:
-        import json as _json
-        for item in BENCHMARK_QUERIES:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        our_val_map = {
+            'conversion_rate':      f"{our_metrics.get('conversionRate', '?')}%",
+            'avg_turns':            str(our_metrics.get('avgTurns', '?')),
+            'engagement_rate':      f"{our_metrics.get('engagementRate', '?')}%",
+            'competitor_retention': f"{our_metrics.get('competitorRetention', '?')}%",
+        }
+
+        def process_metric(item):
             metric = item['metric']
             try:
                 results = brave_search(item['query'], brave_key)
                 if not results:
-                    continue
+                    return None
                 top = results[0]
                 scraped = scrape_for_stat(top['url'], metric, sg_key)
                 if not scraped:
-                    continue
+                    return None
                 analysis = gemini_extract(scraped, metric, our_metrics, top['url'], top['title'], gemini_key)
                 if analysis.get('is_win') and analysis.get('benchmark_value') and top['url']:
-                    our_val_map = {
-                        'conversion_rate':      f"{our_metrics.get('conversionRate', '?')}%",
-                        'avg_turns':            str(our_metrics.get('avgTurns', '?')),
-                        'engagement_rate':      f"{our_metrics.get('engagementRate', '?')}%",
-                        'competitor_retention': f"{our_metrics.get('competitorRetention', '?')}%",
-                    }
                     label = METRIC_LABELS.get(metric, metric.replace('_', ' ').title())
-                    wins.append({
+                    return {
                         'metric':           metric,
                         'metric_name':      label,
                         'our_value':        our_val_map.get(metric, '?'),
@@ -1954,9 +1956,16 @@ def benchmarks():
                         'source_name':      top['title'],
                         'source_url':       top['url'],
                         'source_date':      '2024–2025',
-                    })
-            except Exception as e:
-                continue  # skip this metric, don't break the whole response
+                    }
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(process_metric, item): item for item in BENCHMARK_QUERIES}
+            for future in as_completed(futures, timeout=45):
+                result = future.result()
+                if result:
+                    wins.append(result)
 
     # Fall back to static benchmarks compared against our metrics if live pipeline fails
     if not wins:
