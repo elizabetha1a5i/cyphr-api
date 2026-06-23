@@ -1829,66 +1829,139 @@ def build_wins(our_metrics, benchmarks):
     return wins
 
 
+BENCHMARK_QUERIES = [
+    {'metric': 'conversion_rate', 'query': 'retail kiosk conversion rate statistics 2024 2025 site:statista.com OR site:forrester.com OR site:gartner.com OR site:mckinsey.com OR site:ibm.com OR site:salesforce.com'},
+    {'metric': 'avg_turns',       'query': 'retail chatbot average messages per session benchmark 2024 2025'},
+    {'metric': 'engagement_rate', 'query': 'in-store digital kiosk engagement rate percentage visitors interact 2024 2025'},
+    {'metric': 'competitor_retention', 'query': 'brand loyalty switching competitor consideration purchase retail statistics 2024 2025'},
+]
+
+SCRAPE_PROMPTS = {
+    'conversion_rate':      'Find any statistics about retail kiosk or digital touchpoint conversion rate percentage. Return the number and one sentence of context.',
+    'avg_turns':            'Find any statistics about average number of messages or interactions per session for retail chatbots or conversational AI. Return the number and one sentence of context.',
+    'engagement_rate':      'Find any statistics about what percentage of retail store visitors interact with a kiosk or digital touchpoint. Return the number and one sentence of context.',
+    'competitor_retention': 'Find any statistics about brand loyalty, percentage of customers who considered a competitor but still purchased the primary brand. Return the number and one sentence of context.',
+}
+
+
+def brave_search(query, brave_key):
+    import urllib.request, urllib.parse, json as _json
+    url = f'https://api.search.brave.com/res/v1/web/search?q={urllib.parse.quote(query)}&count=3&freshness=py'
+    req = urllib.request.Request(url, headers={
+        'X-Subscription-Token': brave_key,
+        'Accept': 'application/json'
+    })
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = _json.loads(r.read())
+    return [{'url': x['url'], 'title': x['title'], 'snippet': x.get('description', '')}
+            for x in data.get('web', {}).get('results', [])]
+
+
+def scrape_for_stat(url, metric, sg_key):
+    import urllib.request, json as _json
+    payload = _json.dumps({
+        'website_url': url,
+        'user_prompt': SCRAPE_PROMPTS.get(metric, 'Find any relevant statistics on this page.')
+    }).encode()
+    req = urllib.request.Request(
+        'https://api.scrapegraphai.com/v1/smartscraper',
+        data=payload,
+        headers={'SGAI-APIKEY': sg_key, 'Content-Type': 'application/json'},
+        method='POST'
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = _json.loads(r.read())
+    return data.get('result')
+
+
+def gemini_extract(scraped_content, metric, our_metrics, source_url, source_name, gemini_key):
+    import urllib.request, json as _json
+    our_val_map = {
+        'conversion_rate':      f"{our_metrics.get('conversionRate', '?')}%",
+        'avg_turns':            str(our_metrics.get('avgTurns', '?')),
+        'engagement_rate':      f"{our_metrics.get('engagementRate', '?')}%",
+        'competitor_retention': f"{our_metrics.get('competitorRetention', '?')}%",
+    }
+    prompt = (
+        f'You are given scraped content from a real webpage. Extract ONE specific benchmark statistic for "{metric}" '
+        f'and write a comparison talking point.\n\n'
+        f'Scraped content:\n{_json.dumps(scraped_content)}\n\n'
+        f'Our metric: {our_val_map.get(metric, "?")}\n'
+        f'Source URL: {source_url}\nSource name: {source_name}\n\n'
+        'Return ONLY valid JSON, no markdown:\n'
+        '{"benchmark_value":"e.g. 3-5%","benchmark_context":"one sentence","is_win":true,"talking_point":"ready-to-use sentence comparing our stat to benchmark, citing source name and year"}\n'
+        'If you cannot find a clear relevant statistic, return {"is_win":false}. Do not invent statistics.'
+    )
+    payload = _json.dumps({
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1}
+    }).encode()
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+    with urllib.request.urlopen(req, timeout=20) as r:
+        result = _json.loads(r.read())
+    raw = result['candidates'][0]['content']['parts'][0]['text'].strip()
+    if raw.startswith('```'):
+        raw = '\n'.join(raw.split('\n')[1:])
+    if raw.endswith('```'):
+        raw = raw.rsplit('```', 1)[0]
+    import json as _j
+    return _j.loads(raw.strip())
+
+
 @app.route('/benchmarks', methods=['POST', 'OPTIONS'])
 def benchmarks():
     if request.method == 'OPTIONS':
         resp = app.make_default_options_response()
         return resp
 
-    perplexity_key = os.environ.get('PERPLEXITY_KEY', '')
-    data = request.get_json(force=True, silent=True) or {}
+    brave_key   = os.environ.get('BRAVE_KEY', '')
+    sg_key      = os.environ.get('SCRAPEGRAPH_KEY', '')
+    gemini_key  = os.environ.get('GEMINI_KEY', '')
+    data        = request.get_json(force=True, silent=True) or {}
     our_metrics = data.get('metrics', {})
 
-    fetched_benchmarks = None
-    if perplexity_key:
-        import urllib.request, json as _json
-        prompt = (
-            "Search for the most current publicly available statistics (2024-2025) for these "
-            "retail conversational AI and kiosk metrics. Only use free, publicly accessible sources. "
-            "For each metric return a real verified URL.\n\n"
-            "Metrics needed:\n"
-            "1. conversion_rate — conversion rate for retail in-store digital kiosks or conversational AI\n"
-            "2. engagement_rate — % of retail store visitors who interact with a kiosk or digital touchpoint\n"
-            "3. avg_turns — average number of customer messages per session for retail chatbots or kiosks\n"
-            "4. competitor_retention — % of customers who considered a competitor brand but still purchased the primary brand\n\n"
-            "Return ONLY a raw JSON array, no markdown fences, no explanation:\n"
-            '[{"metric":"conversion_rate","benchmark":4.5,"label":"3-6%","source":"Publication name",'
-            '"url":"https://full-url.com/page","date":"2024"}]'
-        )
-        payload = _json.dumps({
-            'model': 'sonar',
-            'messages': [{'role': 'user', 'content': prompt}],
-            'search_recency_filter': 'year',
-            'return_citations': True,
-            'temperature': 0.1
-        }).encode()
-        req = urllib.request.Request(
-            'https://api.perplexity.ai/chat/completions',
-            data=payload,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {perplexity_key}'
-            },
-            method='POST'
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                result = _json.loads(resp.read())
-            raw = result['choices'][0]['message']['content']
-            # Strip markdown fences if present
-            raw = raw.strip()
-            if raw.startswith('```'):
-                raw = '\n'.join(raw.split('\n')[1:])
-            if raw.endswith('```'):
-                raw = raw.rsplit('```', 1)[0]
-            fetched = _json.loads(raw.strip())
-            # Only keep entries that have a real URL — no unverified stats
-            fetched_benchmarks = [b for b in fetched if b.get('url')]
-        except Exception:
-            fetched_benchmarks = None
+    wins = []
+    if brave_key and sg_key and gemini_key:
+        import json as _json
+        for item in BENCHMARK_QUERIES:
+            metric = item['metric']
+            try:
+                results = brave_search(item['query'], brave_key)
+                if not results:
+                    continue
+                top = results[0]
+                scraped = scrape_for_stat(top['url'], metric, sg_key)
+                if not scraped:
+                    continue
+                analysis = gemini_extract(scraped, metric, our_metrics, top['url'], top['title'], gemini_key)
+                if analysis.get('is_win') and analysis.get('benchmark_value') and top['url']:
+                    our_val_map = {
+                        'conversion_rate':      f"{our_metrics.get('conversionRate', '?')}%",
+                        'avg_turns':            str(our_metrics.get('avgTurns', '?')),
+                        'engagement_rate':      f"{our_metrics.get('engagementRate', '?')}%",
+                        'competitor_retention': f"{our_metrics.get('competitorRetention', '?')}%",
+                    }
+                    label = METRIC_LABELS.get(metric, metric.replace('_', ' ').title())
+                    wins.append({
+                        'metric':           metric,
+                        'metric_name':      label,
+                        'our_value':        our_val_map.get(metric, '?'),
+                        'benchmark_value':  analysis['benchmark_value'],
+                        'multiplier':       None,
+                        'is_win':           True,
+                        'talking_point':    analysis.get('talking_point', ''),
+                        'source_name':      top['title'],
+                        'source_url':       top['url'],
+                        'source_date':      '2024–2025',
+                    })
+            except Exception as e:
+                continue  # skip this metric, don't break the whole response
 
-    benchmarks_to_use = fetched_benchmarks if fetched_benchmarks else STATIC_BENCHMARKS
-    wins = build_wins(our_metrics, benchmarks_to_use)
+    # Fall back to static benchmarks compared against our metrics if live pipeline fails
+    if not wins:
+        wins = build_wins(our_metrics, STATIC_BENCHMARKS)
+
     return jsonify(wins)
 
 
