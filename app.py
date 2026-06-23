@@ -1700,6 +1700,79 @@ Rules:
 # ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.route('/push-snapshot', methods=['POST', 'OPTIONS'])
+def push_snapshot():
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        return resp
+
+    gist_id = os.environ.get('GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify({'error': 'GIST_ID or GITHUB_TOKEN not configured'}), 500
+
+    data = request.get_json(force=True, silent=True) or {}
+    rows = data.get('rows', [])
+    if not rows:
+        return jsonify({'error': 'No rows provided'}), 400
+
+    import urllib.request as _ur, json as _json
+    payload = _json.dumps({
+        'files': {
+            'blarney-snapshot.json': {
+                'content': _json.dumps(rows)
+            }
+        }
+    }).encode()
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}',
+        data=payload,
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        },
+        method='PATCH'
+    )
+    try:
+        with _ur.urlopen(req, timeout=15) as resp:
+            result = _json.loads(resp.read())
+        raw_url = result.get('files', {}).get('blarney-snapshot.json', {}).get('raw_url', '')
+        return jsonify({'ok': True, 'raw_url': raw_url})
+    except _ur.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        return jsonify({'error': f'GitHub API {e.code}: {body}'}), 502
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/snapshot', methods=['GET'])
+def get_snapshot():
+    gist_id = os.environ.get('GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify([])
+
+    import urllib.request as _ur, json as _json
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}',
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        }
+    )
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            result = _json.loads(resp.read())
+        content = result.get('files', {}).get('blarney-snapshot.json', {}).get('content', '[]')
+        rows = _json.loads(content)
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify([])
+
+
 STATIC_BENCHMARKS = [
     {'metric': 'conversion_rate',       'benchmark': 4.5,  'label': '3–6%',             'source': 'Forrester Research: The State of Retail Kiosks 2024',        'url': 'https://www.forrester.com/report/the-state-of-retail-kiosks/', 'date': '2024'},
     {'metric': 'engagement_rate',       'benchmark': 35.0, 'label': '30–40%',           'source': 'Gartner: In-Store Digital Touchpoint Benchmark 2024',        'url': 'https://www.gartner.com/en/retail/topics/digital-commerce',   'date': '2024'},
