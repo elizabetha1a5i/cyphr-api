@@ -331,6 +331,7 @@ def sow_spec(data):
     sow_text = data.get('sowOutput', '')
     brief    = data.get('briefOutput', '')
     estimate = data.get('estimateOutput', '')
+    raw      = data.get('bgNotes', '') or data.get('requirements', '')
     today    = datetime.today().strftime('%-d %B %Y')
 
     team_names = ', '.join(v['name'] for v in CYPHR_TEAM.values())
@@ -359,15 +360,19 @@ def sow_spec(data):
 
     prompt = f"""You are generating a Statement of Work for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
 
-PROJECT DATA:
+SOURCE MATERIAL (read all of this — the raw notes/transcript are the primary source):
 Client: {client}
 Project: {project}
 Budget: £{budget}
 Timeline: {timeline}
-Brief: {brief[:800] if brief else 'Not provided'}
-AI SOW draft: {sow_text[:1200] if sow_text else 'Not provided'}
-Estimate: {estimate[:600] if estimate else 'Not provided'}
 Today: {today}
+
+Raw notes / transcript (extract specific details, names, decisions, scope, KPIs from here):
+{raw[:2500] if raw else 'Not provided'}
+
+Brief summary: {brief[:600] if brief else 'Not provided'}
+AI SOW draft: {sow_text[:800] if sow_text else 'Not provided'}
+Estimate: {estimate[:400] if estimate else 'Not provided'}
 
 APPROACH:
 Write this the way an experienced consultant would if asked to draft a SOW from the same brief in a normal conversation — commit to a complete, professional, ready-to-send document. Use your judgement to fill reasonable gaps from context (project type, timeline, sector norms) rather than defaulting to a placeholder. A thin or incomplete document is a worse outcome than a confident, well-reasoned one.
@@ -411,18 +416,23 @@ def proposal_spec(data):
     sector   = data.get('sector', '')
     proposal = data.get('proposalOutput', '')
     brief    = data.get('briefOutput', '')
+    raw      = data.get('bgNotes', '') or data.get('requirements', '')
     today    = datetime.today().strftime('%d %B %Y')
 
     prompt = f"""You are generating a branded commercial proposal for Cyphr Studio. Return ONLY valid JSON, no markdown, no explanation.
 
-PROJECT DATA:
+SOURCE MATERIAL (read all of this — extract specific details, KPIs, scope decisions, and language directly from the raw notes):
 Client: {client}
 Project: {project}
 Sector: {sector}
 Budget: £{budget}
 Timeline: {timeline}
-Brief: {brief[:800] if brief else 'Not provided'}
-Proposal draft: {proposal[:1000] if proposal else 'Not provided'}
+
+Raw notes / transcript:
+{raw[:2500] if raw else 'Not provided'}
+
+Brief summary: {brief[:600] if brief else 'Not provided'}
+Proposal draft: {proposal[:600] if proposal else 'Not provided'}
 
 RULES:
 - Write as Cyphr Studio — confident, direct, no fluff
@@ -479,6 +489,7 @@ def estimate_spec(data):
     timeline = data.get('timeline', '')
     estimate = data.get('estimateOutput', '')
     brief    = data.get('briefOutput', '')
+    raw      = data.get('bgNotes', '') or data.get('requirements', '')
 
     try:
         total = int(float(str(budget).replace('£','').replace(',','')))
@@ -490,13 +501,17 @@ def estimate_spec(data):
 
     prompt = f"""You are building a cost estimate for a Cyphr Studio project. Return ONLY valid JSON, no markdown.
 
-PROJECT DATA:
+SOURCE MATERIAL (use the raw notes as the primary source for understanding project scope):
 Client: {client}
 Project: {project}
 {'Budget: £0 — this is a pro-bono or grant-funded project' if pro_bono else f'Total budget: £{total:,}'}
 Timeline: {timeline}
-Brief: {brief[:600] if brief else 'Not provided'}
-Estimate notes: {estimate[:600] if estimate else 'Not provided'}
+
+Raw notes / transcript (extract scope, deliverables, and team needs from here):
+{raw[:1500] if raw else 'Not provided'}
+
+Brief: {brief[:400] if brief else 'Not provided'}
+Estimate notes: {estimate[:400] if estimate else 'Not provided'}
 
 AVAILABLE TEAM (use ONLY these, pick what fits the project):
 {team_list}
