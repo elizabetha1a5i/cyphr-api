@@ -40,11 +40,11 @@ CYPHR_DELIVERY_LEAD_ROLE = 'Head of Production'
 CYPHR_EMAIL              = 'hello@cyphr.studio'
 CYPHR_SITE               = 'cyphr.studio'
 
-# Brand colours
-C_PURPLE  = RGBColor(0x5B, 0x4F, 0xD9)
-C_DARK    = RGBColor(0x1F, 0x1F, 0x1F)
-C_GREY    = RGBColor(0x6B, 0x72, 0x80)
-C_LIGHT   = RGBColor(0xE8, 0xE5, 0xFF)
+# Brand colours — aligned to Cyphr identity
+C_BLUE    = RGBColor(0x23, 0x23, 0xCC)  # electric blue (brand accent)
+C_DARK    = RGBColor(0x07, 0x08, 0x09)  # near-black (primary ink)
+C_GREY    = RGBColor(0x9B, 0x9A, 0x8D)  # warm stone
+C_LIGHT   = RGBColor(0xED, 0xE0, 0xED)  # pale blush
 C_WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -134,6 +134,55 @@ def call_ai(prompt, max_tokens=2000, pdf_path=None):
                   'messages': [{'role': 'user', 'content': content}]}, timeout=120)
         res.raise_for_status()
         return res.json()['content'][0]['text']
+
+
+def branded_cover(doc, doc_type, client, project, today):
+    """Render a branded CYPHR cover: blue header bar, doc type, client/project, rule."""
+    # Blue header block via shaded table cell
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.cell(0, 0)
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), '2323CC')
+    tcPr.append(shd)
+    # Remove table borders
+    tbl_pr = tbl._tbl.get_or_add_tblPr()
+    tbl_borders = OxmlElement('w:tblBorders')
+    for side in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+        b = OxmlElement(f'w:{side}')
+        b.set(qn('w:val'), 'none')
+        b.set(qn('w:sz'), '0')
+        tbl_borders.append(b)
+    tbl_pr.append(tbl_borders)
+    p = cell.paragraphs[0]
+    p.paragraph_format.space_before = Pt(14)
+    p.paragraph_format.space_after = Pt(14)
+    p.paragraph_format.left_indent = Pt(6)
+    r = p.add_run('CYPHR STUDIO')
+    r.bold = True; r.font.size = Pt(24); r.font.color.rgb = C_WHITE
+
+    doc.add_paragraph()
+    tp = doc.add_paragraph()
+    tr = tp.add_run(doc_type)
+    tr.bold = True; tr.font.size = Pt(13); tr.font.color.rgb = C_DARK
+
+    if client:
+        cp = doc.add_paragraph()
+        cr = cp.add_run(client.upper())
+        cr.font.size = Pt(10); cr.font.color.rgb = C_GREY
+
+    if project:
+        pp = doc.add_paragraph()
+        pr = pp.add_run(project)
+        pr.font.size = Pt(10); pr.font.color.rgb = C_GREY
+
+    rp = doc.add_paragraph()
+    rp.paragraph_format.space_before = Pt(10)
+    rp.paragraph_format.space_after = Pt(8)
+    rp.add_run('─' * 72).font.color.rgb = C_BLUE
 
 
 def add_run_md(paragraph, text, size=None, color=None):
@@ -533,7 +582,7 @@ def build_sow(data, out):
         p.paragraph_format.space_before = Pt(16)
         p.paragraph_format.space_after  = Pt(4)
         r = p.add_run(text)
-        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_PURPLE
+        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_BLUE
         p.add_run().add_break()
 
     def body(text, size=10):
@@ -552,7 +601,7 @@ def build_sow(data, out):
                 lp = doc.add_paragraph()
                 lp.paragraph_format.space_before = Pt(6)
                 lr = lp.add_run(key.upper() + ':  ')
-                lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_PURPLE
+                lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_BLUE
                 if isinstance(val, list):
                     for item in val:
                         bp = doc.add_paragraph(style='List Bullet')
@@ -583,20 +632,12 @@ def build_sow(data, out):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         lr = p.add_run(f'{label}:  ')
-        lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_PURPLE
+        lr.bold = True; lr.font.size = Pt(size); lr.font.color.rgb = C_BLUE
         vr = p.add_run(str(value) if value else PH(label.lower()))
         vr.font.size = Pt(size); vr.font.color.rgb = C_DARK
 
     # Cover block
-    tp = doc.add_paragraph()
-    tp.add_run('CYPHR').font.size = Pt(22)
-    tp.runs[0].bold = True; tp.runs[0].font.color.rgb = C_PURPLE
-
-    sp = doc.add_paragraph()
-    sr = sp.add_run('Statement of Work')
-    sr.bold = True; sr.font.size = Pt(13); sr.font.color.rgb = C_DARK
-
-    rule()
+    branded_cover(doc, 'Statement of Work', client, project, today)
     kv('Effective date', today)
     kv('Client',         client)
     kv('Project',        project)
@@ -688,7 +729,7 @@ def build_proposal_docx(data, out):
         p.paragraph_format.space_before = Pt(14)
         p.paragraph_format.space_after  = Pt(4)
         r = p.add_run(text)
-        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_PURPLE
+        r.bold = True; r.font.size = Pt(11); r.font.color.rgb = C_BLUE
 
     def body(text, size=10):
         if not text: return
@@ -709,25 +750,13 @@ def build_proposal_docx(data, out):
         p.add_run('─' * 72).font.color.rgb = C_GREY
 
     # Cover
-    tp = doc.add_paragraph()
-    tp.add_run('CYPHR').font.size = Pt(22)
-    tp.runs[0].bold = True; tp.runs[0].font.color.rgb = C_PURPLE
-
-    sp = doc.add_paragraph()
-    sr = sp.add_run(f'PROPOSAL — {client.upper()}')
-    sr.bold = True; sr.font.size = Pt(13); sr.font.color.rgb = C_DARK
-
-    pp = doc.add_paragraph()
-    pr = pp.add_run(project)
-    pr.font.size = Pt(10); pr.font.color.rgb = C_GREY
-
-    rule()
+    branded_cover(doc, 'Proposal', client, project, today)
 
     def kv(label, value):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         lr = p.add_run(f'{label}:  ')
-        lr.bold = True; lr.font.size = Pt(10); lr.font.color.rgb = C_PURPLE
+        lr.bold = True; lr.font.size = Pt(10); lr.font.color.rgb = C_BLUE
         vr = p.add_run(str(value))
         vr.font.size = Pt(10); vr.font.color.rgb = C_DARK
 
@@ -1478,26 +1507,13 @@ def build_brief(data, out):
     bg_notes   = data.get('bgNotes', '')
     today      = datetime.today().strftime('%-d %B %Y')
 
-    tp = doc.add_paragraph()
-    r = tp.add_run('CYPHR')
-    r.bold = True; r.font.size = Pt(22); r.font.color.rgb = C_PURPLE
-
-    sp = doc.add_paragraph()
-    r2 = sp.add_run(f'BRIEF — {client.upper()}')
-    r2.bold = True; r2.font.size = Pt(11); r2.font.color.rgb = C_GREY
-
-    if project:
-        pp = doc.add_paragraph()
-        r3 = pp.add_run(project)
-        r3.font.size = Pt(10); r3.font.color.rgb = C_GREY
-
-    doc.add_paragraph('─' * 68)
+    branded_cover(doc, 'Project Brief', client, project, today)
 
     def kv(label, value):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         lbl = p.add_run(f'{label}:  ')
-        lbl.bold = True; lbl.font.color.rgb = C_PURPLE; lbl.font.size = Pt(10)
+        lbl.bold = True; lbl.font.color.rgb = C_BLUE; lbl.font.size = Pt(10)
         val = p.add_run(str(value))
         val.font.size = Pt(10); val.font.color.rgb = C_DARK
 
@@ -1518,7 +1534,7 @@ def build_brief(data, out):
                 h = doc.add_paragraph()
                 h.paragraph_format.space_before = Pt(14)
                 hr = h.add_run(clean)
-                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = C_PURPLE
+                hr.bold = True; hr.font.size = Pt(11); hr.font.color.rgb = C_BLUE
             elif line.startswith(('• ','- ','* ')):
                 p = doc.add_paragraph(style='List Bullet')
                 add_run_md(p, line[2:].strip(), size=10)
