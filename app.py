@@ -1835,69 +1835,57 @@ def benchmarks():
         resp = app.make_default_options_response()
         return resp
 
-    gemini_key = os.environ.get('GEMINI_KEY', '')
+    perplexity_key = os.environ.get('PERPLEXITY_KEY', '')
     data = request.get_json(force=True, silent=True) or {}
     our_metrics = data.get('metrics', {})
 
     fetched_benchmarks = None
-    if gemini_key:
+    if perplexity_key:
         import urllib.request, json as _json
         prompt = (
-            "You are a retail industry analyst. Search for the most current (2024–2025) "
-            "published benchmark data for these metrics in retail conversational AI and in-store digital kiosks:\n"
-            "1. Conversion rate for retail digital touchpoints / kiosks\n"
-            "2. Engagement rate (% of visitors who interact with the kiosk)\n"
-            "3. Average number of customer interactions per conversational AI session in retail\n"
-            "4. Retention rate: customers who considered a competitor product but still purchased the primary brand\n\n"
-            "Return ONLY a JSON array. Each object must have: "
-            "metric (one of: conversion_rate, engagement_rate, avg_turns, competitor_retention), "
-            "benchmark (numeric midpoint value), label (range string e.g. '3-6%'), "
-            "source (publication or org name), url (source URL or empty string), date (year or month/year).\n"
-            "No markdown, no explanation — raw JSON array only."
+            "Search for the most current publicly available statistics (2024-2025) for these "
+            "retail conversational AI and kiosk metrics. Only use free, publicly accessible sources. "
+            "For each metric return a real verified URL.\n\n"
+            "Metrics needed:\n"
+            "1. conversion_rate — conversion rate for retail in-store digital kiosks or conversational AI\n"
+            "2. engagement_rate — % of retail store visitors who interact with a kiosk or digital touchpoint\n"
+            "3. avg_turns — average number of customer messages per session for retail chatbots or kiosks\n"
+            "4. competitor_retention — % of customers who considered a competitor brand but still purchased the primary brand\n\n"
+            "Return ONLY a raw JSON array, no markdown fences, no explanation:\n"
+            '[{"metric":"conversion_rate","benchmark":4.5,"label":"3-6%","source":"Publication name",'
+            '"url":"https://full-url.com/page","date":"2024"}]'
         )
-        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
         payload = _json.dumps({
-            'contents': [{'parts': [{'text': prompt}]}],
-            'tools': [{'googleSearch': {}}],
-            'generationConfig': {'temperature': 0.1}
+            'model': 'sonar',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'search_recency_filter': 'year',
+            'return_citations': True,
+            'temperature': 0.1
         }).encode()
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+        req = urllib.request.Request(
+            'https://api.perplexity.ai/chat/completions',
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {perplexity_key}'
+            },
+            method='POST'
+        )
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 result = _json.loads(resp.read())
-            candidate = result.get('candidates', [{}])[0]
-
-            # Extract grounding sources from groundingMetadata
-            grounding_sources = {}  # title → uri
-            grounding = candidate.get('groundingMetadata', {})
-            for chunk in grounding.get('groundingChunks', []):
-                web = chunk.get('web', {})
-                uri = web.get('uri', '')
-                title = web.get('title', '')
-                if uri and title:
-                    grounding_sources[title] = uri
-
-            raw = candidate.get('content', {}).get('parts', [{}])[0].get('text', '[]')
+            raw = result['choices'][0]['message']['content']
+            # Strip markdown fences if present
             raw = raw.strip()
             if raw.startswith('```'):
                 raw = '\n'.join(raw.split('\n')[1:])
             if raw.endswith('```'):
                 raw = raw.rsplit('```', 1)[0]
             fetched = _json.loads(raw.strip())
-
-            # Attach real grounding URLs where available — match by source name substring
-            for item in fetched:
-                if not item.get('url'):
-                    for title, uri in grounding_sources.items():
-                        if any(word.lower() in title.lower() for word in (item.get('source', '') or '').split()[:3] if len(word) > 3):
-                            item['url'] = uri
-                            break
-                    if not item.get('url') and grounding_sources:
-                        item['url'] = list(grounding_sources.values())[0]
-
-            fetched_benchmarks = fetched
-        except Exception as e:
-            fetched_benchmarks = None  # fall through to static
+            # Only keep entries that have a real URL — no unverified stats
+            fetched_benchmarks = [b for b in fetched if b.get('url')]
+        except Exception:
+            fetched_benchmarks = None
 
     benchmarks_to_use = fetched_benchmarks if fetched_benchmarks else STATIC_BENCHMARKS
     wins = build_wins(our_metrics, benchmarks_to_use)
