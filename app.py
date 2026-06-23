@@ -137,51 +137,37 @@ def call_ai(prompt, max_tokens=2000, pdf_path=None):
 
 
 def branded_cover(doc, doc_type, client, project, today):
-    """Render a branded CYPHR cover: blue header bar, doc type, client/project, rule."""
-    # Blue header block via shaded table cell
-    tbl = doc.add_table(rows=1, cols=1)
-    cell = tbl.cell(0, 0)
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), '2323CC')
-    tcPr.append(shd)
-    # Remove table borders
-    tbl_pr = tbl._tbl.get_or_add_tblPr()
-    tbl_borders = OxmlElement('w:tblBorders')
-    for side in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
-        b = OxmlElement(f'w:{side}')
-        b.set(qn('w:val'), 'none')
-        b.set(qn('w:sz'), '0')
-        tbl_borders.append(b)
-    tbl_pr.append(tbl_borders)
-    p = cell.paragraphs[0]
-    p.paragraph_format.space_before = Pt(14)
-    p.paragraph_format.space_after = Pt(14)
-    p.paragraph_format.left_indent = Pt(6)
-    r = p.add_run('CYPHR STUDIO')
-    r.bold = True; r.font.size = Pt(24); r.font.color.rgb = C_WHITE
+    """Render a branded CYPHR cover: wordmark, doc type, client/project, rule."""
+    # CYPHR STUDIO wordmark — large, bold, blue
+    wp = doc.add_paragraph()
+    wp.paragraph_format.space_before = Pt(0)
+    wp.paragraph_format.space_after  = Pt(2)
+    wr = wp.add_run('CYPHR STUDIO')
+    wr.bold = True; wr.font.size = Pt(28); wr.font.color.rgb = C_BLUE
 
-    doc.add_paragraph()
+    # Doc type
     tp = doc.add_paragraph()
-    tr = tp.add_run(doc_type)
-    tr.bold = True; tr.font.size = Pt(13); tr.font.color.rgb = C_DARK
+    tp.paragraph_format.space_after = Pt(2)
+    tr = tp.add_run(doc_type.upper())
+    tr.bold = True; tr.font.size = Pt(11); tr.font.color.rgb = C_DARK
 
+    # Client + project in muted text
     if client:
         cp = doc.add_paragraph()
+        cp.paragraph_format.space_after = Pt(1)
         cr = cp.add_run(client.upper())
         cr.font.size = Pt(10); cr.font.color.rgb = C_GREY
 
     if project:
         pp = doc.add_paragraph()
+        pp.paragraph_format.space_after = Pt(2)
         pr = pp.add_run(project)
         pr.font.size = Pt(10); pr.font.color.rgb = C_GREY
 
+    # Blue rule
     rp = doc.add_paragraph()
-    rp.paragraph_format.space_before = Pt(10)
-    rp.paragraph_format.space_after = Pt(8)
+    rp.paragraph_format.space_before = Pt(8)
+    rp.paragraph_format.space_after  = Pt(10)
     rp.add_run('─' * 72).font.color.rgb = C_BLUE
 
 
