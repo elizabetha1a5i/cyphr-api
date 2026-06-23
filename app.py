@@ -1077,16 +1077,18 @@ def build_proposal_pptx(data, out):
     # Template slide 6/7: title top-left, tagline top-right, photo strip bottom
     sl = prs.slides.add_slide(blank)
     add_header(sl, 1)
-    cover_size = 80 if len(client) > 18 else 100 if len(client) > 12 else 120
-    # Big client name top-left (Bandit Condensed)
+    cover_size = 52 if len(client) > 30 else 64 if len(client) > 22 else 80 if len(client) > 14 else 96
+    # Big client name top-left (Bandit Condensed) — capped to leave room for photo strip
     add_tb(sl, client.upper(),
-           ML, CT, SW * 0.52, PptxInches(2.5),
+           ML, CT, SW * 0.75, PptxInches(3.2),
            font='Bandit Condensed', size=cover_size, color=C_INK)
     # Project description top-right
     proj_desc = f'{project}\nProposal — {today}'
     add_tb(sl, proj_desc, SW * 0.56, CT, SW * 0.40, PptxInches(1.2),
            font='Messina Sans', size=12, color=C_INK, wrap=True)
-    # Photo strip bottom half
+    # Accent rule before photo strip
+    add_rect(sl, PptxInches(0), PptxInches(3.9), SW, PptxPt(1.5), C_ACCENT)
+    # Photo strip bottom half — solid dark panels as brand placeholder
     add_photo_strip(sl, PptxInches(4.0), SH - PptxInches(4.0))
 
     # ── SLIDE 2: EXECUTIVE SUMMARY ────────────────────────────────────────────
