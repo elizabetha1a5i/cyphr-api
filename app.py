@@ -553,20 +553,38 @@ Return this exact JSON:
 # DOCUMENT BUILDERS — from JSON spec, not from templates
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def parse_sow_sections(text):
+    """Parse SOW text with ALL-CAPS section headers into a dict of {section: content}."""
+    sections = {}
+    current = None
+    buf = []
+    for line in text.split('\n'):
+        m = re.match(r'^([A-Z][A-Z\s&/]{2,30}):\s*(.*)$', line.strip())
+        if m:
+            if current:
+                sections[current] = '\n'.join(buf).strip()
+            current = m.group(1).strip()
+            buf = [m.group(2)] if m.group(2).strip() else []
+        elif current:
+            buf.append(line)
+    if current:
+        sections[current] = '\n'.join(buf).strip()
+    return sections
+
+
 def build_sow(data, out):
-    # 1. Generate structured content via AI
-    spec_json = call_ai(sow_spec(data), max_tokens=3000)
-    try:
-        sec = parse_json_response(spec_json)
-    except Exception as e:
-        raise RuntimeError(f'SOW generation failed — AI response was not valid JSON (likely truncated). Raw response (first 1000 chars): {spec_json[:1000]}') from e
+    # Parse the pre-generated sowOutput from the frontend (no backend AI call)
+    sow_text = data.get('sowOutput', '')
+    sec_raw  = parse_sow_sections(sow_text) if sow_text else {}
 
-    # 2. Verify before rendering
-    issues = verify_output('sow', sec, data)
-    if issues:
-        print(f'[SOW VERIFY] {issues}')
+    def _get(*keys):
+        for k in keys:
+            for sk in (k, k.upper(), k.title()):
+                if sk in sec_raw and sec_raw[sk]:
+                    return sec_raw[sk]
+        return ''
 
-    # 3. Build fresh Word document — no template dependency
+    # Build fresh Word document — no template dependency
     doc = Document()
     for section in doc.sections:
         section.top_margin    = Inches(1)
@@ -574,9 +592,28 @@ def build_sow(data, out):
         section.left_margin   = Inches(1.2)
         section.right_margin  = Inches(1.2)
 
-    today = sec.get('effective_date', datetime.today().strftime('%-d %B %Y'))
-    client = sec.get('client', data.get('clientName','CLIENT'))
-    project = sec.get('project', data.get('projectName','PROJECT'))
+    today   = datetime.today().strftime('%-d %B %Y')
+    client  = data.get('clientName', 'CLIENT')
+    project = data.get('projectName', 'PROJECT')
+
+    # Build a synthetic sec dict for the body renderer below
+    sec = {
+        'effective_date':  today,
+        'client':          client,
+        'project':         project,
+        'summary':         _get('SUMMARY', 'OVERVIEW'),
+        'objectives':      _get('OBJECTIVES'),
+        'assumptions':     _get('ASSUMPTIONS'),
+        'responsibilities':_get('RESPONSIBILITIES'),
+        'location':        _get('LOCATION') or 'United Kingdom',
+        'milestones':      _get('MILESTONES', 'TIMELINE'),
+        'fee':             _get('FEE', 'COMMERCIAL'),
+        'payment_terms':   _get('PAYMENT TERMS') or 'Invoiced at agreed milestones. Payment terms: 30 days from invoice date.',
+        'client_contact':  '[CONFIRM: client project lead name and email]',
+        'delivery_lead':   CYPHR_DELIVERY_LEAD,
+        'delivery_lead_role': CYPHR_DELIVERY_LEAD_ROLE,
+    }
+    issues = []
 
     def heading(text):
         p = doc.add_paragraph()
@@ -900,16 +937,23 @@ def build_proposal_pptx(data, out):
             'scope_services':    scope_services,
         }
     else:
-        # No skill output — generate content via AI with template PDF as visual reference
-        template_pdf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'templates', 'proposal-template.pdf')
-        spec_json = call_ai(proposal_spec(data), max_tokens=3500, pdf_path=template_pdf)
-        try:
-            sec = parse_json_response(spec_json)
-        except Exception as e:
-            raise RuntimeError(f'Proposal PPTX: AI response not valid JSON. Raw: {spec_json[:1000]}') from e
-        issues = verify_output('proposal', sec, data)
-        if issues:
-            print(f'[PROPOSAL PPTX] {issues}')
+        # No proposalOutput yet — build from whatever project data we have
+        sec = {
+            'client':            data.get('clientName', 'CLIENT'),
+            'project':           data.get('projectName', 'PROJECT'),
+            'date':              today,
+            'executive_summary': data.get('briefOutput', '')[:400] if data.get('briefOutput') else '',
+            'opportunity':       '',
+            'approach':          [],
+            'deliverables':      [],
+            'milestones':        [],
+            'investment':        f"£{data.get('budget', '')}" if data.get('budget') else '',
+            'why_cyphr':         '',
+            'assumptions':       [],
+            'cost_sections':     [],
+            'total':             f"£{data.get('budget', '')}" if data.get('budget') else '',
+            'scope_services':    {},
+        }
 
     client  = sec.get('client',  data.get('clientName', 'CLIENT'))
     project = sec.get('project', data.get('projectName', 'PROJECT'))
@@ -1182,26 +1226,87 @@ def build_proposal_pptx(data, out):
     prs.save(out)
 
 
+def parse_estimate_phases(text):
+    """Parse estimateOutput text into phases list for the xlsx renderer."""
+    phases = []
+    current = None
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # Phase header: "PHASE: Name" or "Phase 1: Name" or "## Phase Name"
+        pm = re.match(r'^(?:PHASE|Phase\s*\d*)[:\s]+(.+)$', line, re.IGNORECASE)
+        if not pm:
+            pm = re.match(r'^#+\s+(.+)$', line)
+        if pm:
+            current = {'name': pm.group(1).strip(), 'roles': []}
+            phases.append(current)
+            continue
+        if current is None:
+            continue
+        # Role line: "Role — X days @ £rate/day = £total"
+        rm = re.match(
+            r'^(.+?)\s*[—\-]+\s*(\d+\.?\d*)\s*days?\s*@\s*£?([\d,]+)[/\s]*day\s*=?\s*£?([\d,]+)',
+            line, re.IGNORECASE)
+        if rm:
+            days = float(rm.group(2))
+            rate = int(rm.group(3).replace(',', ''))
+            current['roles'].append({
+                'name': rm.group(1).strip(),
+                'rate': rate,
+                'days': days,
+                'source': 'context',
+            })
+    # Fallback: if no PHASE headers found, treat whole text as one phase
+    if not phases and text.strip():
+        phases = [{'name': 'Project Delivery', 'roles': []}]
+    return phases
+
+
 def build_estimate(data, out):
     CONTINGENCY = 0.10
-    MARGIN_RATE = 0.50  # charge-out multiplier on top of cost
+    MARGIN_RATE = 0.50
 
-    # 1. Generate phase/role breakdown via AI
-    spec_json = call_ai(estimate_spec(data), max_tokens=3000)
+    # Parse pre-generated estimateOutput — no backend AI call
+    est_text = data.get('estimateOutput', '')
+    phases   = parse_estimate_phases(est_text) if est_text else []
+
+    # Extract total from estimateOutput if present
+    budget_raw = data.get('budget', '0')
     try:
-        sec = parse_json_response(spec_json)
-    except Exception as e:
-        raise RuntimeError(f'Estimate JSON parse failed. Raw (first 1000): {spec_json[:1000]}') from e
+        total_budget = int(float(str(budget_raw).replace('£','').replace(',','')))
+    except:
+        total_budget = 0
 
-    issues = verify_output('estimate', sec, data)
-    if issues:
-        print(f'[ESTIMATE VERIFY] {issues}')
+    total_match = re.search(r'TOTAL[:\s]+£?([\d,]+)', est_text, re.IGNORECASE) if est_text else None
+    if total_match:
+        try:
+            total_budget = int(total_match.group(1).replace(',', ''))
+        except:
+            pass
 
-    client   = sec.get('client',  data.get('clientName', 'CLIENT'))
-    project  = sec.get('project', data.get('projectName', 'PROJECT'))
-    today    = datetime.today().strftime('%d %B %Y')
-    pro_bono = sec.get('pro_bono', False)
-    phases   = sec.get('phases', [])
+    pro_bono = total_budget == 0
+
+    # If no phases parsed and we have a budget, create a simple single-phase placeholder
+    if not phases:
+        phases = [{'name': 'Project Delivery', 'roles': [
+            {'name': 'Strategy Lead', 'rate': 950, 'days': 5, 'source': 'estimated'},
+            {'name': 'Producer', 'rate': 500, 'days': 10, 'source': 'estimated'},
+        ]}]
+
+    client  = data.get('clientName', 'CLIENT')
+    project = data.get('projectName', 'PROJECT')
+    today   = datetime.today().strftime('%d %B %Y')
+
+    # Build a sec dict that matches what the existing xlsx renderer expects
+    sec = {
+        'client':        client,
+        'project':       project,
+        'total_budget':  total_budget,
+        'pro_bono':      pro_bono,
+        'phases':        phases,
+    }
+    issues = []
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1310,11 +1415,16 @@ def build_estimate(data, out):
         row += 1
 
         for role_entry in roles:
-            team_key = role_entry.get('team_key', '')
-            days     = float(role_entry.get('days', 0))
-            team     = CYPHR_TEAM.get(team_key)
+            team_key  = role_entry.get('team_key', '')
+            days      = float(role_entry.get('days', 0))
+            team      = CYPHR_TEAM.get(team_key)
+            # Support direct name/rate from parsed estimateOutput (no team_key)
             if not team:
-                continue
+                role_name = role_entry.get('name', '')
+                role_rate = role_entry.get('rate', 0)
+                if not role_name or not role_rate:
+                    continue
+                team = {'name': role_name, 'rate': int(role_rate)}
             rate      = team['rate']
             fees      = rate * days
             charge    = fees * (1 + MARGIN_RATE)
@@ -1537,6 +1647,59 @@ Return this exact JSON:
     return prompt
 
 
+def extract_status_content(data):
+    """Extract KPIs, action items, risks, workstreams from existing AI outputs — no new AI call."""
+    all_text = '\n'.join(filter(None, [
+        data.get('briefOutput', ''),
+        data.get('sowOutput', ''),
+        data.get('proposalOutput', ''),
+        data.get('bgNotes', '') or data.get('requirements', ''),
+    ]))
+    lines = [l.strip() for l in all_text.split('\n') if l.strip()]
+
+    # KPIs: lines with % or number comparisons or metric language
+    kpis = []
+    for l in lines:
+        if re.search(r'\d+%|\bKPI\b|\btarget\b|\bmetric\b|\buplift\b|\bdwell\b|\bconversion\b', l, re.IGNORECASE):
+            if len(l) > 10 and len(l) < 200:
+                kpis.append({'metric': l[:100], 'value': '', 'target': '', 'status': 'On Track'})
+        if len(kpis) >= 6:
+            break
+
+    # Workstreams: from SOW milestones/phases
+    sow = data.get('sowOutput', '') or data.get('estimateOutput', '')
+    workstreams = []
+    for l in sow.split('\n'):
+        clean = re.sub(r'^([-•*]|\d+[\.\)]|week\s*\d+:|month\s*\d+:|phase\s*\d*:?|milestone\s*\d*:?|PHASE[:\s]+)\s*', '', l.strip(), flags=re.IGNORECASE).strip()
+        clean = clean.split('—')[0].strip()  # strip " — date" part
+        if len(clean) > 5 and not re.match(r'^(cyphr|client|sign.?off|tbc|n\/a|\[|responsibilities|fee|assumption)', clean, re.IGNORECASE):
+            workstreams.append(clean)
+        if len(workstreams) >= 6:
+            break
+
+    # Risks: lines with risk language
+    risks = []
+    for l in lines:
+        if re.search(r'\brisk\b|\bissue\b|\bauth\b|\btoken\b|\bdelay\b|\bblocker\b|\bconcern\b|\bfail\b', l, re.IGNORECASE):
+            if len(l) > 10 and len(l) < 200:
+                risks.append(l[:150])
+        if len(risks) >= 5:
+            break
+
+    # Action items: lines with owner + action language
+    action_items = []
+    sow_lines = (data.get('sowOutput', '') or '').split('\n')
+    for l in sow_lines:
+        # Match "Milestone name — date" or "ACTION: ..." or "- [person] to [do something]"
+        am = re.match(r'^[-•*]?\s*(.{5,80})\s*[—\-]+\s*(.{3,40})$', l.strip())
+        if am:
+            action_items.append({'action': am.group(1).strip(), 'owner': 'Cyphr', 'due': am.group(2).strip(), 'status': 'Open'})
+        if len(action_items) >= 8:
+            break
+
+    return kpis, action_items, risks, workstreams
+
+
 def build_status_sheet(data, out):
     client   = data.get('clientName', 'CLIENT')
     project  = data.get('projectName', 'PROJECT')
@@ -1544,31 +1707,8 @@ def build_status_sheet(data, out):
     timeline = data.get('timeline', '')
     today    = datetime.today().strftime('%d %B %Y')
 
-    # AI extraction of KPIs, actions, risks, workstreams from raw notes
-    spec_json = call_ai(status_spec(data), max_tokens=1500)
-    try:
-        sec = parse_json_response(spec_json)
-    except Exception:
-        sec = {}
-
-    kpis         = sec.get('kpis', [])
-    action_items = sec.get('action_items', [])
-    risks        = sec.get('risks', [])
-    workstreams  = sec.get('workstreams', [])
-
-    # Fallback workstreams from SOW/estimate text if AI found none
-    if not workstreams:
-        sow = data.get('sowOutput', '') or data.get('estimateOutput', '')
-        if sow:
-            lines = sow.split('\n')
-            extracted = []
-            for l in lines:
-                clean = re.sub(r'^([-•*]|\d+[\.\)]|week\s*\d+:|month\s*\d+:|phase\s*\d*:?|milestone\s*\d*:?)\s*', '', l, flags=re.IGNORECASE).strip()
-                if len(clean) > 5 and not re.match(r'^(cyphr|client|sign.?off|tbc|n\/a|\[)', clean, re.IGNORECASE):
-                    extracted.append(clean)
-                if len(extracted) >= 6:
-                    break
-            workstreams = extracted
+    # Extract from existing AI outputs — no new AI call
+    kpis, action_items, risks, workstreams = extract_status_content(data)
 
     wb = openpyxl.Workbook()
     ws = wb.active
