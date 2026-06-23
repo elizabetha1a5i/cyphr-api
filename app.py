@@ -1863,7 +1863,7 @@ def benchmarks():
         }).encode()
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 result = _json.loads(resp.read())
             candidate = result.get('candidates', [{}])[0]
 
