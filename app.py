@@ -864,14 +864,13 @@ def build_proposal_pptx(data, out):
         os.path.join(ASSETS_DIR, 'Group 2147258323.png'),
     ]
 
-    # ── Colours ───────────────────────────────────────────────────────────────
-    C_BG     = PptxRGB(0xF8, 0xF8, 0xF8)
-    C_INK    = PptxRGB(0x11, 0x11, 0x11)
-    C_ACCENT = PptxRGB(0x23, 0x23, 0xCC)  # Cyphr electric blue
-    C_MUTED  = PptxRGB(0x88, 0x80, 0x78)
-    C_RULE   = PptxRGB(0x11, 0x11, 0x11)
-    C_DARK   = PptxRGB(0x07, 0x08, 0x09)
-    C_LIGHT  = PptxRGB(0xEA, 0xEA, 0xFF)  # electric blue light tint
+    # ── Colours — matched to Cyphr slide template ─────────────────────────────
+    C_BG     = PptxRGB(0xEA, 0xEA, 0xE5)  # warm off-white (template background)
+    C_INK    = PptxRGB(0x07, 0x08, 0x09)  # near-black
+    C_ACCENT = PptxRGB(0x23, 0x23, 0xCC)  # electric blue
+    C_MUTED  = PptxRGB(0x9B, 0x9A, 0x8D)  # warm stone
+    C_WHITE  = PptxRGB(0xFF, 0xFF, 0xFF)
+    C_TINT   = PptxRGB(0xEA, 0xEA, 0xFF)  # blue light tint
 
     # ── Content — skill output takes precedence over a fresh AI call ──────────
     proposal_text = data.get('proposalOutput', '').strip()
@@ -985,7 +984,7 @@ def build_proposal_pptx(data, out):
         return sh
 
     def add_tb(slide, text, x, y, w, h,
-               font='Impact', size=72, color=None,
+               font='Messina Sans', size=11, color=None,
                align=PP_ALIGN.LEFT, wrap=True, bold=False):
         color = color or C_INK
         box   = slide.shapes.add_textbox(x, y, w, h)
@@ -1002,7 +1001,7 @@ def build_proposal_pptx(data, out):
         return box
 
     def add_tb_lines(slide, lines, x, y, w, h,
-                     font='Impact', size=72, color=None,
+                     font='Bandit Condensed', size=72, color=None,
                      align=PP_ALIGN.LEFT):
         color = color or C_INK
         box   = slide.shapes.add_textbox(x, y, w, h)
@@ -1018,26 +1017,29 @@ def build_proposal_pptx(data, out):
             run.font.color.rgb = color
         return box
 
-    def add_header(slide, page_num):
+    def add_header(slide, page_num, dark=False):
+        """Add CYPHR wordmark left + 'PRESENTATION / PAGE N' right, thin rule below."""
         set_bg(slide)
-        if os.path.exists(LOGO_PATH):
-            slide.shapes.add_picture(LOGO_PATH, ML, PptxInches(0.16), height=PptxInches(0.42))
+        ink = C_WHITE if dark else C_INK
+        if os.path.exists(LOGO_PATH) and not dark:
+            slide.shapes.add_picture(LOGO_PATH, ML, PptxInches(0.14), height=PptxInches(0.38))
         else:
-            add_tb(slide, 'CYPHR', ML, PptxInches(0.18), PptxInches(2), PptxInches(0.45),
-                   font='Impact', size=16)
+            add_tb(slide, 'CYPHR', ML, PptxInches(0.14), PptxInches(2), PptxInches(0.42),
+                   font='Bandit Condensed', size=14, color=ink, bold=True)
         crumb_box = slide.shapes.add_textbox(
-            SW - PptxInches(2.5), PptxInches(0.16), PptxInches(2.45), PptxInches(0.52))
+            SW - PptxInches(2.8), PptxInches(0.10), PptxInches(2.75), PptxInches(0.52))
         tf = crumb_box.text_frame
         tf.word_wrap = False
-        for i, line in enumerate([f'CYPHR X {client.upper()}', f'PAGE  {page_num}']):
+        for i, line in enumerate(['PRESENTATION', f'PAGE  {page_num}']):
             p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
             p.alignment = PP_ALIGN.RIGHT
             run = p.add_run()
             run.text           = line
-            run.font.name      = 'Arial'
-            run.font.size      = PptxPt(5.5)
-            run.font.color.rgb = C_INK
-        add_rect(slide, PptxInches(0), RY, SW, PptxPt(1.5))
+            run.font.name      = 'Messina Sans'
+            run.font.size      = PptxPt(5)
+            run.font.color.rgb = ink
+        # thin horizontal rule
+        add_rect(slide, PptxInches(0), RY, SW, PptxPt(0.75), ink)
 
     def add_photo_strip(slide, y, h):
         gap = PptxInches(0.1)
@@ -1053,175 +1055,245 @@ def build_proposal_pptx(data, out):
             # Placeholder: dark brand colour (intentional design block, not broken image)
             add_rect(slide, x, y, pw, h, PptxRGB(0x1A, 0x1A, 0x18))
 
+    def add_blue_slide(slide, title, subtitle=''):
+        """Full electric-blue divider slide (template slides 1–5 style)."""
+        f = slide.background.fill
+        f.solid()
+        f.fore_color.rgb = C_ACCENT
+        add_tb(slide, 'CYPHR', ML, PptxInches(0.14), PptxInches(2), PptxInches(0.42),
+               font='Bandit Condensed', size=14, color=C_WHITE, bold=True)
+        add_tb(slide, 'PRESENTATION', SW - PptxInches(2.8), PptxInches(0.10),
+               PptxInches(2.75), PptxInches(0.28), font='Messina Sans', size=5,
+               color=C_WHITE, align=PP_ALIGN.RIGHT)
+        # Large title bottom-left (Bandit Condensed, white)
+        fs = 80 if len(title) > 20 else 96
+        add_tb(slide, title, ML, SH - PptxInches(2.4), SW * 0.65, PptxInches(2.1),
+               font='Bandit Condensed', size=fs, color=C_WHITE)
+        if subtitle:
+            add_tb(slide, subtitle, SW * 0.68, SH - PptxInches(1.1), SW * 0.28,
+                   PptxInches(0.9), font='Messina Sans', size=10, color=C_WHITE, wrap=True)
+
     # ── SLIDE 1: COVER ────────────────────────────────────────────────────────
+    # Template slide 6/7: title top-left, tagline top-right, photo strip bottom
     sl = prs.slides.add_slide(blank)
     add_header(sl, 1)
-    # Scale font size to avoid overflow on long client names
-    cover_font = 80 if len(client) > 18 else 100 if len(client) > 12 else 120
+    cover_size = 80 if len(client) > 18 else 100 if len(client) > 12 else 120
+    # Big client name top-left (Bandit Condensed)
     add_tb(sl, client.upper(),
-           ML, PptxInches(0.82), SW - ML * 2, PptxInches(2.9),
-           font='Impact', size=cover_font)
-    add_tb_lines(sl, [project.upper(), 'Proposal'],
-                 ML, PptxInches(3.85), PptxInches(9), PptxInches(0.9),
-                 font='Impact', size=24)
-    add_rect(sl, PptxInches(0), RY, SW, PptxPt(4), C_ACCENT)
-    add_photo_strip(sl, PptxInches(4.88), SH - PptxInches(4.88))
+           ML, CT, SW * 0.52, PptxInches(2.5),
+           font='Bandit Condensed', size=cover_size, color=C_INK)
+    # Project description top-right
+    proj_desc = f'{project}\nProposal — {today}'
+    add_tb(sl, proj_desc, SW * 0.56, CT, SW * 0.40, PptxInches(1.2),
+           font='Messina Sans', size=12, color=C_INK, wrap=True)
+    # Photo strip bottom half
+    add_photo_strip(sl, PptxInches(4.0), SH - PptxInches(4.0))
 
     # ── SLIDE 2: EXECUTIVE SUMMARY ────────────────────────────────────────────
+    # Template slide 32 "Our Approach": title top-left, body text right/center
     sl = prs.slides.add_slide(blank)
     add_header(sl, 2)
-    add_tb_lines(sl, ['Executive', 'Summary'],
-                 ML, CT, SW * 0.42, PptxInches(3.2), font='Impact', size=72)
+    add_tb(sl, 'Executive Summary',
+           ML, CT, SW * 0.38, PptxInches(1.4),
+           font='Bandit Condensed', size=60, color=C_INK)
+    add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
     body = sec.get('executive_summary', '')
     if body:
-        add_tb(sl, body, SW * 0.46, CT, SW * 0.5, SH - CT - PptxInches(0.3),
-               font='Arial', size=11, wrap=True)
+        # Three evenly-spaced paragraphs like slide 32
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', body) if s.strip()]
+        chunk     = max(1, len(sentences) // 3)
+        paras     = [' '.join(sentences[i:i+chunk]) for i in range(0, len(sentences), chunk)][:3]
+        py = CT + PptxInches(1.7)
+        ph = (SH - py - PptxInches(0.3)) / max(len(paras), 1)
+        for para in paras:
+            add_tb(sl, para, SW * 0.42, py, SW * 0.54, ph,
+                   font='Messina Sans', size=10, wrap=True)
+            py += ph
 
     # ── SLIDE 3: THE ASK ──────────────────────────────────────────────────────
+    # Template slide 17: title + subtitle left, [01][02][03] list right
     sl = prs.slides.add_slide(blank)
     add_header(sl, 3)
-    add_tb(sl, 'The Ask', ML, CT, SW * 0.38, PptxInches(2.4), font='Impact', size=72)
     opp      = sec.get('opportunity', '')
     approach = sec.get('approach', [])
-    rx3 = SW * 0.42
-    rw3 = SW - rx3 - PptxInches(0.3)
+    add_tb(sl, 'The Ask',
+           ML, CT, SW * 0.38, PptxInches(1.6),
+           font='Bandit Condensed', size=72, color=C_INK)
     if opp:
-        add_tb(sl, opp, rx3, CT, rw3, PptxInches(1.4), font='Arial', size=11, wrap=True)
-    if approach:
-        ay = CT + PptxInches(1.5) if opp else CT
-        add_tb(sl, '\n'.join(f'●  {a}' for a in approach),
-               rx3, ay, rw3, SH - ay - PptxInches(0.3), font='Arial', size=10, wrap=True)
+        add_tb(sl, opp, ML, CT + PptxInches(1.7), SW * 0.36, PptxInches(1.0),
+               font='Messina Sans', size=10, color=C_INK, wrap=True)
+    add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
+    # Numbered [01][02][03] items right column
+    items3 = approach[:3] if approach else []
+    if items3:
+        col_x = SW * 0.42
+        col_w = (SW - col_x - PptxInches(0.3)) / max(len(items3), 1)
+        for i, item in enumerate(items3):
+            ix = col_x + col_w * i
+            add_tb(sl, f'[0{i+1}]', ix, CT, col_w - PptxInches(0.1), PptxInches(0.35),
+                   font='Messina Sans', size=9, bold=True, color=C_INK)
+            add_tb(sl, item, ix, CT + PptxInches(0.38), col_w - PptxInches(0.1),
+                   SH - CT - PptxInches(0.6), font='Messina Sans', size=9, wrap=True)
 
     # ── SLIDE 4: SCOPE + SERVICES ─────────────────────────────────────────────
+    # Template slide 42: "We cover all your needs" + [01]–[06] capability grid
     sl = prs.slides.add_slide(blank)
     add_header(sl, 4)
-    add_tb_lines(sl, ['Scope +', 'Services'],
-                 ML, CT, PptxInches(5), PptxInches(2.5), font='Impact', size=56)
-    add_tb(sl, 'Creating tomorrow\'s digital products, services and experiences.',
-           ML, PptxInches(3.6), PptxInches(5), PptxInches(0.55),
-           font='Arial', size=9, color=C_MUTED)
+    add_tb(sl, 'Scope + Services',
+           ML, CT, SW * 0.38, PptxInches(1.4),
+           font='Bandit Condensed', size=60, color=C_INK)
+    add_tb(sl, 'Digital products, services and fan experiences.',
+           ML, CT + PptxInches(1.5), SW * 0.36, PptxInches(0.5),
+           font='Messina Sans', size=9, color=C_MUTED)
+    add_rect(sl, PptxInches(0), CT + PptxInches(1.4), SW, PptxPt(0.75), C_INK)
 
     scope = sec.get('scope_services') or {
-        'Strategy & Venture':    ['IP development & product creation', 'Joint ventures & partnerships', 'Venture studio model'],
-        'Product Design & Build':['User research & usability testing', 'UX/UI design', 'Front-end/back-end development'],
-        'Marketing':             ['Marketing strategy & planning', 'Fan lifecycle marketing', 'Campaign activation'],
-        'Data & Insights':       ['Audience segmentation', 'Data & performance analytics', 'Predictive insights'],
+        'Strategy & Venture':     ['IP development & product creation', 'Joint ventures & partnerships'],
+        'Product Design & Build': ['User research & usability testing', 'UX/UI design', 'Development'],
+        'Marketing':              ['Fan lifecycle marketing', 'Campaign activation'],
+        'Data & Insights':        ['Audience segmentation', 'Data & performance analytics'],
     }
-    cats  = list(scope.items())[:4]
-    gx    = SW * 0.38
-    gw    = SW - gx
-    cw    = gw / 2
-    ch    = (SH - CT) / 2
-    add_rect(sl, gx, CT, PptxPt(1.5), SH - CT)
-    add_rect(sl, gx, CT, gw, PptxPt(1.5))
-    add_rect(sl, gx, CT + ch, gw, PptxPt(1.5))
-    add_rect(sl, gx + cw, CT, PptxPt(1.5), SH - CT)
+    cats = list(scope.items())[:6]
+    gx   = SW * 0.42
+    gw   = SW - gx - PptxInches(0.25)
+    cw   = gw / 2
+    ch   = (SH - CT - PptxInches(1.5)) / max(((len(cats) + 1) // 2), 1)
     for i, (cat, items) in enumerate(cats):
         col = i % 2
         row = i // 2
-        cx  = gx + cw * col + PptxInches(0.22)
-        cy  = CT + ch * row + PptxInches(0.18)
-        add_tb(sl, cat, cx, cy, cw - PptxInches(0.3), PptxInches(0.32),
-               font='Arial', size=7.5, bold=True)
-        add_tb(sl, '\n'.join(items[:5]),
-               cx, cy + PptxInches(0.38), cw - PptxInches(0.3),
-               ch - PptxInches(0.55), font='Arial', size=8, wrap=True)
+        cx  = gx + cw * col
+        cy  = CT + PptxInches(1.5) + ch * row
+        # Numbered label
+        add_tb(sl, f'[0{i+1}]  {cat}', cx + PptxInches(0.12), cy + PptxInches(0.08),
+               cw - PptxInches(0.18), PptxInches(0.28),
+               font='Messina Sans', size=8, bold=True)
+        add_tb(sl, '\n'.join(items[:3]), cx + PptxInches(0.12),
+               cy + PptxInches(0.38), cw - PptxInches(0.18),
+               ch - PptxInches(0.5), font='Messina Sans', size=8, wrap=True)
+        # Thin divider between rows
+        if row > 0:
+            add_rect(sl, gx, cy, gw, PptxPt(0.5), C_INK)
+    add_rect(sl, gx + cw, CT + PptxInches(1.4), PptxPt(0.5), SH - CT - PptxInches(1.4), C_INK)
 
     # ── SLIDE 5: DELIVERABLES ─────────────────────────────────────────────────
+    # Template slide 17 layout with deliverables as [01][02][03]
     sl = prs.slides.add_slide(blank)
     add_header(sl, 5)
-    add_tb_lines(sl, ['Detailed', 'Deliverables'],
-                 ML, CT, SW * 0.38, PptxInches(2.4), font='Impact', size=60)
+    add_tb(sl, 'Detailed Deliverables',
+           ML, CT, SW * 0.38, PptxInches(1.4),
+           font='Bandit Condensed', size=52, color=C_INK)
+    add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
     deliverables = sec.get('deliverables') or []
+    milestones   = sec.get('milestones') or []
     if deliverables:
-        add_tb(sl, '\n'.join(f'{i+1}.  {d}' for i, d in enumerate(deliverables)),
-               ML, CT + PptxInches(2.5), SW * 0.38, SH - CT - PptxInches(2.8),
-               font='Arial', size=10, wrap=True)
-    milestones = sec.get('milestones') or []
+        d_items = deliverables[:6]
+        col_x = ML
+        col_w = (SW * 0.45) / max(len(d_items[:3]), 1)
+        for i, d in enumerate(d_items[:3]):
+            ix = col_x + col_w * i
+            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(1.7),
+                   col_w - PptxInches(0.08), PptxInches(0.3),
+                   font='Messina Sans', size=8, bold=True)
+            add_tb(sl, d, ix, CT + PptxInches(2.1), col_w - PptxInches(0.08),
+                   PptxInches(1.8), font='Messina Sans', size=8, wrap=True)
+        for i, d in enumerate(d_items[3:], 3):
+            col2 = i - 3
+            ix   = col_x + col_w * col2
+            add_tb(sl, f'[0{i+1}]', ix, CT + PptxInches(4.1),
+                   col_w - PptxInches(0.08), PptxInches(0.3),
+                   font='Messina Sans', size=8, bold=True)
+            add_tb(sl, d, ix, CT + PptxInches(4.5), col_w - PptxInches(0.08),
+                   PptxInches(1.0), font='Messina Sans', size=8, wrap=True)
     if milestones:
-        rx5 = SW * 0.42
-        rw5 = SW - rx5 - PptxInches(0.3)
-        add_tb(sl, 'KEY MILESTONES', rx5, CT, rw5, PptxInches(0.28),
-               font='Arial', size=7, color=C_MUTED, bold=True)
-        add_rect(sl, rx5, CT + PptxInches(0.3), rw5, PptxPt(1))
-        add_tb(sl, '\n'.join(f'●  {m}' for m in milestones),
-               rx5, CT + PptxInches(0.42), rw5, SH - CT - PptxInches(0.6),
-               font='Arial', size=10, wrap=True)
+        rx5 = SW * 0.50
+        rw5 = SW - rx5 - PptxInches(0.25)
+        add_tb(sl, 'KEY MILESTONES', rx5, CT + PptxInches(1.7), rw5, PptxInches(0.28),
+               font='Messina Sans', size=7, color=C_MUTED, bold=True)
+        add_tb(sl, '\n'.join(f'— {m}' for m in milestones),
+               rx5, CT + PptxInches(2.1), rw5, SH - CT - PptxInches(2.4),
+               font='Messina Sans', size=9, wrap=True)
 
     # ── SLIDE 6: COST BREAKDOWN ───────────────────────────────────────────────
+    # Template slide 48: "Costs breakdown" title left, phase table right
     sl = prs.slides.add_slide(blank)
     add_header(sl, 6)
-    lw = SW * 0.42
-    add_tb_lines(sl, ['Cost', 'Breakdown'],
-                 ML, CT, lw - PptxInches(0.2), PptxInches(2.5), font='Impact', size=56)
-    add_rect(sl, lw, CT, PptxPt(1.5), SH - CT)
+    lw = SW * 0.40
+    add_tb(sl, 'Costs Breakdown',
+           ML, CT, lw - PptxInches(0.2), PptxInches(1.4),
+           font='Bandit Condensed', size=60, color=C_INK)
     assump = sec.get('assumptions', [])
-    add_tb(sl, 'Assumptions & Exclusions',
-           ML, PptxInches(3.6), lw - PptxInches(0.2), PptxInches(0.38),
-           font='Arial', size=8.5, bold=True)
     if assump:
-        add_tb(sl, '\n'.join(f'●  {a}' for a in assump),
-               ML, PptxInches(4.02), lw - PptxInches(0.2),
-               SH - PptxInches(4.25), font='Arial', size=7.5, wrap=True)
+        add_tb(sl, 'Assumptions', ML, CT + PptxInches(1.5), lw - PptxInches(0.2),
+               PptxInches(0.3), font='Messina Sans', size=8, bold=True)
+        add_tb(sl, '\n'.join(f'— {a}' for a in assump[:6]),
+               ML, CT + PptxInches(1.85), lw - PptxInches(0.2),
+               SH - CT - PptxInches(2.1), font='Messina Sans', size=8, wrap=True)
+    else:
+        add_tb(sl, 'Pricing in GBP. All costs exclude VAT.',
+               ML, CT + PptxInches(1.5), lw - PptxInches(0.2), PptxInches(0.5),
+               font='Messina Sans', size=9, color=C_MUTED, wrap=True)
 
+    # Right table (slide 48 style)
     rx  = lw + PptxInches(0.35)
-    rw  = SW - rx - PptxInches(0.25)
+    rw  = SW - rx - PptxInches(0.22)
     ry  = CT
-    add_tb(sl, 'COST ESTIMATE', rx, ry, rw * 0.6, PptxInches(0.28),
-           font='Arial', size=6.5, bold=True)
-    add_tb(sl, '£ (GBP)', rx + rw * 0.6, ry, rw * 0.4, PptxInches(0.28),
-           font='Arial', size=6.5, bold=True, align=PP_ALIGN.RIGHT)
-    add_rect(sl, rx, ry + PptxInches(0.3), rw, PptxPt(1.5))
+    # Header row
+    add_tb(sl, 'BALLPARK COSTS', rx, ry, rw * 0.7, PptxInches(0.28),
+           font='Messina Sans', size=7, bold=True, color=C_INK)
+    add_tb(sl, '£ GBP', rx + rw * 0.7, ry, rw * 0.3, PptxInches(0.28),
+           font='Messina Sans', size=7, bold=True, align=PP_ALIGN.RIGHT)
+    add_rect(sl, rx, ry + PptxInches(0.32), rw, PptxPt(1.0), C_INK)
 
-    cy = ry + PptxInches(0.4)
+    cy = ry + PptxInches(0.5)
     for cs in sec.get('cost_sections', []):
         name   = cs.get('name', '')
-        tasks  = cs.get('tasks', [])
-        team   = cs.get('team', '')
-        dur    = cs.get('duration', '')
         amount = cs.get('amount', '')
-        add_tb(sl, name,   rx,              cy, rw * 0.65, PptxInches(0.28), font='Arial', size=9, bold=True)
-        add_tb(sl, amount, rx + rw * 0.65, cy, rw * 0.35, PptxInches(0.28), font='Arial', size=9, align=PP_ALIGN.RIGHT)
-        cy += PptxInches(0.3)
-        add_tb(sl, 'Tasks', rx, cy, rw, PptxInches(0.2), font='Arial', size=6.5, color=C_MUTED, bold=True)
-        cy += PptxInches(0.22)
-        add_tb(sl, '\n'.join(f'●  {t}' for t in tasks[:3]), rx, cy, rw, PptxInches(0.5),
-               font='Arial', size=7.5, wrap=True)
-        cy += PptxInches(0.55)
-        if team:
-            add_tb(sl, f'Team   {team}', rx, cy, rw, PptxInches(0.2), font='Arial', size=7, color=C_MUTED)
-            cy += PptxInches(0.22)
+        dur    = cs.get('duration', '')
+        add_rect(sl, rx, cy, rw, PptxPt(0.5), C_MUTED)
+        cy += PptxInches(0.1)
+        add_tb(sl, name, rx, cy, rw * 0.72, PptxInches(0.3),
+               font='Messina Sans', size=9, bold=True)
         if dur:
-            add_tb(sl, f'Duration   {dur}', rx, cy, rw, PptxInches(0.2), font='Arial', size=7, color=C_MUTED)
-            cy += PptxInches(0.22)
-        add_rect(sl, rx, cy, rw, PptxPt(0.75), C_LIGHT)
-        cy += PptxInches(0.14)
+            add_tb(sl, dur, rx, cy + PptxInches(0.3), rw * 0.72, PptxInches(0.22),
+                   font='Messina Sans', size=7.5, color=C_MUTED)
+        add_tb(sl, amount, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.3),
+               font='Messina Sans', size=9, bold=True, align=PP_ALIGN.RIGHT)
+        row_h = PptxInches(0.58) if not dur else PptxInches(0.72)
+        cy += row_h
 
     total = sec.get('total') or sec.get('investment', '')
+    add_rect(sl, rx, cy, rw, PptxPt(1.0), C_INK)
+    cy += PptxInches(0.12)
+    add_tb(sl, 'Total Ballpark Range', rx, cy, rw * 0.72, PptxInches(0.32),
+           font='Messina Sans', size=9, bold=True)
     if total:
-        add_rect(sl, rx, SH - PptxInches(0.88), rw, PptxPt(1.5))
-        add_tb(sl, 'TOTAL', rx, SH - PptxInches(0.78), rw * 0.5, PptxInches(0.55),
-               font='Arial', size=10, bold=True)
-        add_tb(sl, total, rx + rw * 0.5, SH - PptxInches(0.88), rw * 0.5, PptxInches(0.65),
-               font='Impact', size=30, color=C_ACCENT, align=PP_ALIGN.RIGHT)
+        add_tb(sl, total, rx + rw * 0.72, cy, rw * 0.28, PptxInches(0.32),
+               font='Messina Sans', size=9, bold=True, align=PP_ALIGN.RIGHT)
+    add_tb(sl, '(estimated)', rx, cy + PptxInches(0.32), rw, PptxInches(0.25),
+           font='Messina Sans', size=7.5, color=C_MUTED)
 
     # ── SLIDE 7: WHY CYPHR ───────────────────────────────────────────────────
+    # Blue divider-style slide (template slide 2 style) + body text
     sl = prs.slides.add_slide(blank)
     add_header(sl, 7)
-    add_tb_lines(sl, ['Why', 'Cyphr?'],
-                 ML, CT, SW * 0.38, PptxInches(2.5), font='Impact', size=72)
     why = sec.get('why_cyphr', '')
+    add_tb(sl, 'Why Cyphr?',
+           ML, CT, SW * 0.38, PptxInches(1.4),
+           font='Bandit Condensed', size=72, color=C_INK)
+    add_rect(sl, PptxInches(0), CT + PptxInches(1.5), SW, PptxPt(0.75), C_INK)
     if why:
         add_tb(sl, why, SW * 0.42, CT, SW * 0.54, SH - CT - PptxInches(0.3),
-               font='Arial', size=11, wrap=True)
-    add_rect(sl, SW * 0.42, CT, PptxPt(1.5), SH - CT)
+               font='Messina Sans', size=11, wrap=True)
+    add_rect(sl, SW * 0.40, CT + PptxInches(1.5), PptxPt(0.5), SH - CT - PptxInches(1.5), C_INK)
 
     # ── SLIDE 8: THANK YOU ────────────────────────────────────────────────────
+    # Template slide 62: massive "THANK YOU" fills top 2/3, photos bottom
     sl = prs.slides.add_slide(blank)
     add_header(sl, 8)
-    add_tb_lines(sl, ['Thank', 'You'],
-                 ML, CT, SW - ML * 2, PptxInches(3.2), font='Impact', size=110)
-    add_photo_strip(sl, PptxInches(4.95), SH - PptxInches(4.95))
+    add_tb(sl, 'THANK YOU',
+           ML, CT, SW - ML * 2, PptxInches(3.0),
+           font='Bandit Condensed', size=160, color=C_INK)
+    add_photo_strip(sl, PptxInches(4.4), SH - PptxInches(4.4))
 
     prs.save(out)
 
