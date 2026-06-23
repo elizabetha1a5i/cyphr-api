@@ -813,7 +813,7 @@ def build_proposal_pptx(data, out):
     ]
 
     # ── Colours ───────────────────────────────────────────────────────────────
-    C_BG     = PptxRGB(0xE9, 0xE5, 0xDC)
+    C_BG     = PptxRGB(0xF8, 0xF8, 0xF8)
     C_INK    = PptxRGB(0x11, 0x11, 0x11)
     C_ACCENT = PptxRGB(0x23, 0x23, 0xCC)  # Cyphr electric blue
     C_MUTED  = PptxRGB(0x88, 0x80, 0x78)
@@ -1005,6 +1005,7 @@ def build_proposal_pptx(data, out):
     add_tb_lines(sl, [project.upper(), 'Proposal'],
                  ML, PptxInches(3.85), PptxInches(9), PptxInches(0.9),
                  font='Impact', size=24)
+    add_rect(sl, PptxInches(0), RY, SW, PptxPt(4), C_ACCENT)
     add_photo_strip(sl, PptxInches(4.88), SH - PptxInches(4.88))
 
     # ── SLIDE 2: EXECUTIVE SUMMARY ────────────────────────────────────────────
@@ -1145,9 +1146,20 @@ def build_proposal_pptx(data, out):
         add_tb(sl, total, rx + rw * 0.5, SH - PptxInches(0.88), rw * 0.5, PptxInches(0.65),
                font='Impact', size=30, color=C_ACCENT, align=PP_ALIGN.RIGHT)
 
-    # ── SLIDE 7: THANK YOU ────────────────────────────────────────────────────
+    # ── SLIDE 7: WHY CYPHR ───────────────────────────────────────────────────
     sl = prs.slides.add_slide(blank)
     add_header(sl, 7)
+    add_tb_lines(sl, ['Why', 'Cyphr?'],
+                 ML, CT, SW * 0.38, PptxInches(2.5), font='Impact', size=72)
+    why = sec.get('why_cyphr', '')
+    if why:
+        add_tb(sl, why, SW * 0.42, CT, SW * 0.54, SH - CT - PptxInches(0.3),
+               font='Arial', size=11, wrap=True)
+    add_rect(sl, SW * 0.42, CT, PptxPt(1.5), SH - CT)
+
+    # ── SLIDE 8: THANK YOU ────────────────────────────────────────────────────
+    sl = prs.slides.add_slide(blank)
+    add_header(sl, 8)
     add_tb_lines(sl, ['Thank', 'You'],
                  ML, CT, SW - ML * 2, PptxInches(3.2), font='Impact', size=110)
     add_photo_strip(sl, PptxInches(4.95), SH - PptxInches(4.95))
@@ -1476,6 +1488,205 @@ def build_estimate(data, out):
         for i, issue in enumerate(issues, 2):
             vs[f'A{i}'] = f'• {issue}'
             vs[f'A{i}'].font = Font(name='Arial', size=10)
+
+    wb.save(out)
+
+
+def status_spec(data):
+    client   = data.get('clientName', '')
+    project  = data.get('projectName', '')
+    notes    = (data.get('rawText') or data.get('bgNotes') or data.get('requirements')
+                or data.get('briefOutput') or data.get('sowOutput') or '')
+
+    prompt = f"""You are extracting structured status information from client notes for a Cyphr Studio project. Return ONLY valid JSON, no markdown.
+
+PROJECT:
+Client: {client}
+Project: {project}
+Notes/Transcript:
+{notes[:2000] if notes else 'Not provided'}
+
+Extract the following from the notes. If a field is not mentioned, return an empty array.
+
+Return this exact JSON:
+{{
+  "kpis": [
+    {{"metric": "name of the KPI", "value": "current value", "target": "target value", "status": "On Track|At Risk|Behind"}}
+  ],
+  "action_items": [
+    {{"action": "what needs to be done", "owner": "person responsible", "due": "due date or timeframe", "status": "Open"}}
+  ],
+  "risks": ["risk or issue as a short string"],
+  "workstreams": ["workstream or project area name"]
+}}"""
+    return prompt
+
+
+def build_status_sheet(data, out):
+    client   = data.get('clientName', 'CLIENT')
+    project  = data.get('projectName', 'PROJECT')
+    budget   = data.get('budget', '')
+    timeline = data.get('timeline', '')
+    today    = datetime.today().strftime('%d %B %Y')
+
+    # AI extraction of KPIs, actions, risks, workstreams from raw notes
+    spec_json = call_ai(status_spec(data), max_tokens=1500)
+    try:
+        sec = parse_json_response(spec_json)
+    except Exception:
+        sec = {}
+
+    kpis         = sec.get('kpis', [])
+    action_items = sec.get('action_items', [])
+    risks        = sec.get('risks', [])
+    workstreams  = sec.get('workstreams', [])
+
+    # Fallback workstreams from SOW/estimate text if AI found none
+    if not workstreams:
+        sow = data.get('sowOutput', '') or data.get('estimateOutput', '')
+        if sow:
+            lines = sow.split('\n')
+            extracted = []
+            for l in lines:
+                clean = re.sub(r'^([-•*]|\d+[\.\)]|week\s*\d+:|month\s*\d+:|phase\s*\d*:?|milestone\s*\d*:?)\s*', '', l, flags=re.IGNORECASE).strip()
+                if len(clean) > 5 and not re.match(r'^(cyphr|client|sign.?off|tbc|n\/a|\[)', clean, re.IGNORECASE):
+                    extracted.append(clean)
+                if len(extracted) >= 6:
+                    break
+            workstreams = extracted
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Status'
+
+    def s(cell, bold=False, bg=None, color='1F1F1F', size=10, align='left', wrap=False):
+        cell.font = Font(name='Arial', size=size, bold=bold, color=color)
+        if bg:
+            cell.fill = PatternFill('solid', fgColor=bg)
+        cell.alignment = Alignment(horizontal=align, vertical='center', wrap_text=wrap)
+
+    def write(r, c, val, **kw):
+        cell = ws.cell(row=r, column=c, value=val)
+        s(cell, **kw)
+        return cell
+
+    def section_header(r, label):
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        c = ws.cell(row=r, column=1, value=label)
+        s(c, bold=True, bg='070809', color='FFFFFF', size=9)
+        ws.row_dimensions[r].height = 18
+
+    col_widths = {1: 38, 2: 20, 3: 20, 4: 32}
+    for col, w in col_widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    ws.merge_cells('A1:D1')
+    ws['A1'] = 'PROJECT STATUS SHEET'
+    s(ws['A1'], bold=True, size=16, color='2323CC')
+    ws.row_dimensions[1].height = 32
+
+    ws.merge_cells('A2:D2')
+    ws['A2'] = f'{client}  /  {project}  |  {today}'
+    s(ws['A2'], size=9, color='6B7280')
+    ws.row_dimensions[2].height = 16
+
+    # ── Project info ──────────────────────────────────────────────────────────
+    r = 4
+    write(r, 1, 'Client',   bold=True, size=9, color='6B7280')
+    write(r, 2, client,     size=9)
+    write(r, 3, 'Date',     bold=True, size=9, color='6B7280')
+    write(r, 4, today,      size=9)
+    r += 1
+    write(r, 1, 'Project',  bold=True, size=9, color='6B7280')
+    write(r, 2, project,    size=9)
+    write(r, 3, 'Budget',   bold=True, size=9, color='6B7280')
+    write(r, 4, f'£{budget}' if budget else '[CONFIRM]', size=9)
+    r += 1
+    write(r, 1, 'Timeline', bold=True, size=9, color='6B7280')
+    write(r, 2, timeline or '[CONFIRM]', size=9)
+    write(r, 3, 'Status',   bold=True, size=9, color='6B7280')
+    write(r, 4, 'In Progress', size=9)
+    r += 2
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    if kpis:
+        section_header(r, 'KPIs'); r += 1
+        for col, label in [(1, 'METRIC'), (2, 'VALUE'), (3, 'TARGET'), (4, 'STATUS')]:
+            write(r, col, label, bold=True, bg='2323CC', color='FFFFFF', size=8, align='center')
+        r += 1
+        for i, kpi in enumerate(kpis):
+            bg = 'EAEAFF' if i % 2 == 0 else None
+            write(r, 1, kpi.get('metric', ''), size=9, bg=bg)
+            write(r, 2, kpi.get('value', ''),  size=9, bg=bg, align='center')
+            write(r, 3, kpi.get('target', ''), size=9, bg=bg, align='center')
+            status = kpi.get('status', '')
+            rag = '🟢' if status == 'On Track' else '🔴' if status == 'Behind' else '🟡'
+            write(r, 4, f'{rag} {status}', size=9, bg=bg)
+            r += 1
+        r += 1
+
+    # ── Workstreams ───────────────────────────────────────────────────────────
+    section_header(r, 'WORKSTREAMS'); r += 1
+    for col, label in [(1, 'WORKSTREAM'), (2, 'STATUS'), (3, 'OWNER'), (4, 'NOTES')]:
+        write(r, col, label, bold=True, bg='2323CC', color='FFFFFF', size=8, align='center')
+    r += 1
+    if workstreams:
+        for i, stream_name in enumerate(workstreams):
+            bg = 'EAEAFF' if i % 2 == 0 else None
+            rag = '🟡' if i == 0 else '⬜'
+            status = 'In Progress' if i == 0 else 'Not Started'
+            write(r, 1, stream_name, size=9, bg=bg, wrap=True)
+            write(r, 2, f'{rag} {status}', size=9, bg=bg)
+            write(r, 3, 'Cyphr', size=9, bg=bg)
+            write(r, 4, '', size=9, bg=bg)
+            ws.row_dimensions[r].height = 20
+            r += 1
+    else:
+        for _ in range(3):
+            write(r, 1, '[WORKSTREAM — confirm at kick-off]', size=9, color='9B9A8D')
+            write(r, 2, '⬜ Not Started', size=9)
+            write(r, 3, 'Cyphr', size=9)
+            write(r, 4, '', size=9)
+            r += 1
+    r += 1
+
+    # ── Risks & Issues ────────────────────────────────────────────────────────
+    section_header(r, 'RISKS & ISSUES'); r += 1
+    write(r, 1, 'RISK / ISSUE', bold=True, bg='2323CC', color='FFFFFF', size=8)
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    r += 1
+    if risks:
+        for risk in risks:
+            write(r, 1, f'● {risk}', size=9, wrap=True)
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+            ws.row_dimensions[r].height = 20
+            r += 1
+    else:
+        write(r, 1, '[None identified]', size=9, color='9B9A8D')
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        r += 1
+    r += 1
+
+    # ── Next Actions ──────────────────────────────────────────────────────────
+    section_header(r, 'NEXT ACTIONS'); r += 1
+    for col, label in [(1, 'ACTION'), (2, 'OWNER'), (3, 'DUE DATE'), (4, 'STATUS')]:
+        write(r, col, label, bold=True, bg='2323CC', color='FFFFFF', size=8, align='center')
+    r += 1
+    if action_items:
+        for i, item in enumerate(action_items):
+            bg = 'EAEAFF' if i % 2 == 0 else None
+            write(r, 1, item.get('action', ''), size=9, bg=bg, wrap=True)
+            write(r, 2, item.get('owner', ''),  size=9, bg=bg)
+            write(r, 3, item.get('due', ''),    size=9, bg=bg)
+            write(r, 4, item.get('status', 'Open'), size=9, bg=bg)
+            ws.row_dimensions[r].height = 20
+            r += 1
+    else:
+        for _ in range(3):
+            write(r, 1, '', size=9); write(r, 2, '', size=9)
+            write(r, 3, '', size=9); write(r, 4, '', size=9)
+            r += 1
 
     wb.save(out)
 
@@ -2174,6 +2385,12 @@ def generate():
                 out = f'{tmp}/{slug}_estimate.xlsx'
                 build_estimate(data, out)
                 return send_file(out, as_attachment=True, download_name=f'{slug}_estimate.xlsx',
+                               mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+            elif ftype == 'status':
+                out = f'{tmp}/{slug}_status_sheet.xlsx'
+                build_status_sheet(data, out)
+                return send_file(out, as_attachment=True, download_name=f'{slug}_status_sheet.xlsx',
                                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
             elif ftype == 'gantt':
