@@ -1747,6 +1747,73 @@ def push_snapshot():
         return jsonify({'error': str(e)}), 502
 
 
+@app.route('/push-intel-snapshot', methods=['POST', 'OPTIONS'])
+def push_intel_snapshot():
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        return resp
+
+    gist_id = os.environ.get('INTEL_GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify({'error': 'INTEL_GIST_ID or GITHUB_TOKEN not configured'}), 500
+
+    data = request.get_json(force=True, silent=True) or {}
+    import urllib.request as _ur, json as _json
+    payload = _json.dumps({
+        'files': {
+            'intelligence-snapshot.json': {
+                'content': _json.dumps(data)
+            }
+        }
+    }).encode()
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}',
+        data=payload,
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        },
+        method='PATCH'
+    )
+    try:
+        with _ur.urlopen(req, timeout=15) as resp:
+            result = _json.loads(resp.read())
+        return jsonify({'ok': True})
+    except _ur.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        return jsonify({'error': f'GitHub API {e.code}: {body}'}), 502
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/intel-snapshot', methods=['GET'])
+def get_intel_snapshot():
+    gist_id = os.environ.get('INTEL_GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify(None)
+
+    import urllib.request as _ur, json as _json
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}',
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        }
+    )
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            result = _json.loads(resp.read())
+        content = result.get('files', {}).get('intelligence-snapshot.json', {}).get('content', 'null')
+        return jsonify(_json.loads(content))
+    except Exception:
+        return jsonify(None)
+
+
 @app.route('/snapshot', methods=['GET'])
 def get_snapshot():
     gist_id = os.environ.get('GIST_ID', '')
