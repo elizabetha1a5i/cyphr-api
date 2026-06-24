@@ -984,7 +984,7 @@ def build_proposal_pptx(data, out):
             for root, _, files in os.walk(work_dir):
                 for f in files:
                     fp = os.path.join(root, f)
-                    z.write(fp, os.path.relpath(fp, work_dir))
+                    z.write(fp, os.path.relpath(fp, work_dir).replace(os.sep, '/'))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
