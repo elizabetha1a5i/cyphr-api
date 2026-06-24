@@ -10,7 +10,7 @@ from docx.oxml import OxmlElement
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-import shutil, subprocess
+import shutil, subprocess, zipfile
 
 app = Flask(__name__)
 CORS(app)
@@ -849,13 +849,147 @@ def parse_skill_slides(text):
     return slides
 
 
-def build_proposal_pptx(data, out):
-    from pptx import Presentation as PptxPresentation
-    from pptx.util import Inches as PptxInches, Pt as PptxPt
-    from pptx.dml.color import RGBColor as PptxRGB
-    from pptx.enum.text import PP_ALIGN
+# ── Proposal PPTX helpers (XML template fill) ─────────────────────────────
 
-    # ── Brand assets ──────────────────────────────────────────────────────────
+def _xml_escape(text):
+    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+def _replace_text(xml, old, new):
+    esc = _xml_escape(new) if new else ''
+    return xml.replace(f'<a:t>{old}</a:t>', f'<a:t>{esc}</a:t>')
+
+def _fix_slide5(xml):
+    return re.compile(
+        r'\s*<p:pic>(?:(?!</p:pic>).)*?r:embed="rId4"(?:(?!</p:pic>).)*?</p:pic>',
+        re.DOTALL
+    ).sub('', xml)
+
+def _fill_slide1(xml, cfg):
+    client = cfg['client_name'].upper()
+    xml = _replace_text(xml, 'CLIENT', client)
+    xml = _replace_text(xml, 'PROJECT NAME', cfg['project_name'])
+    xml = _replace_text(xml, 'CYPHR X BLUE SQUARE', f'CYPHR X {client}')
+    return xml
+
+def _fill_slide2(xml, cfg):
+    client = cfg['client_name'].upper()
+    xml = _replace_text(xml, 'This proposal outlines….', cfg.get('executive_summary', ''))
+    xml = _replace_text(xml, 'CYPHR X BLUE SQUARE', f'CYPHR X {client}')
+    return xml
+
+def _fill_slide3(xml, cfg):
+    client = cfg['client_name'].upper()
+    xml = _replace_text(xml, 'Activity Overview….', cfg.get('activity_overview', ''))
+    xml = _replace_text(xml, 'CYPHR X BLUE SQUARE', f'CYPHR X {client}')
+    return xml
+
+def _fill_slide6(xml, cfg):
+    return _replace_text(xml, 'CYPHR X BLUE SQUARE', f'CYPHR X {cfg["client_name"].upper()}')
+
+def _fill_slide8(xml, cfg):
+    DEFAULT_TEAM = 'UX/UI Designer, Experience Lead, Delivery Lead, Tech Lead, Frontend Developer, Backend Developer'
+    client = cfg['client_name'].upper()
+    xml = _replace_text(xml, 'CYPHR X BLUE SQUARE', f'CYPHR X {client}')
+    xml = _replace_text(xml, '£25,314', cfg.get('total_cost', '£TBC'))
+    deliverables = cfg.get('deliverables', [])
+    if len(deliverables) >= 1:
+        d = deliverables[0]
+        xml = _replace_text(xml, 'Core Roadshow Experience Web App Design &amp; Build', d.get('name', ''))
+        xml = _replace_text(xml, 'UI screens and full experience design updates', d.get('task1', ''))
+        xml = _replace_text(xml, 'Agent Experience build updates', d.get('task2', ''))
+        xml = _replace_text(xml, 'Leaderboard integration into presentation build', d.get('task3', ''))
+        xml = _replace_text(xml, 'Support (includes 0.5 day per week of tour)', d.get('task4', ''))
+        xml = _replace_text(xml, '2 weeks + Tour duration adhoc support', d.get('duration', 'TBC'))
+        xml = _replace_text(xml, '£14,700', d.get('cost', '£TBC'))
+        xml = _replace_text(xml, DEFAULT_TEAM, d.get('team', DEFAULT_TEAM))
+    if len(deliverables) >= 2:
+        d = deliverables[1]
+        xml = _replace_text(xml, 'Photo Booth ', d.get('name', '') + ' ')
+        xml = _replace_text(xml, 'UI &amp; Design: Branded interface, countdowns, and print overlays.', d.get('task1', ''))
+        xml = _replace_text(xml, 'Capture Mechanics: Front-facing camera integration with 4-shot grid sequence.', d.get('task2', ''))
+        xml = _replace_text(xml, 'User Flow: Start trigger, retake options, and print confirmation logic.', d.get('task3', ''))
+        xml = _replace_text(xml, 'Output: Automated GIF creation and QR code generation.', d.get('task4', ''))
+        xml = _replace_text(xml, '2 weeks', d.get('duration', 'TBC'))
+        xml = _replace_text(xml, '£10,614', d.get('cost', '£TBC'))
+    assumptions = cfg.get('assumptions', {})
+    if assumptions.get('intro'):
+        xml = _replace_text(xml,
+            'These costs are for project resources for the delivery of the Samsung Roadshow experience, not including hardware of usage costs. Any additional third party costs including licensing and hosting are not included and will be flagged as part of the project.',
+            assumptions['intro'])
+    return xml
+
+def _parse_deliverables(data):
+    estimate = data.get('estimateOutput', '') or ''
+    deliverables = []
+    lines = [l.strip() for l in estimate.split('\n') if '£' in l and len(l) > 10]
+    for i, line in enumerate(lines[:2]):
+        cost_match = re.search(r'£[\d,]+', line)
+        cost = cost_match.group() if cost_match else '£TBC'
+        name = re.sub(r'£[\d,]+.*', '', line).strip(' -•|')
+        if name:
+            deliverables.append({
+                'name': name,
+                'cost': cost,
+                'task1': '', 'task2': '', 'task3': '', 'task4': '',
+                'duration': data.get('timeline', 'TBC'),
+                'team': 'UX/UI Designer, Experience Lead, Delivery Lead, Tech Lead, Frontend Developer, Backend Developer',
+            })
+    if not deliverables:
+        budget = data.get('budget', '')
+        cost_str = f'£{int(budget):,}' if str(budget).isdigit() else '£TBC'
+        deliverables.append({
+            'name': data.get('projectName', 'Project Delivery'),
+            'cost': cost_str,
+            'task1': '', 'task2': '', 'task3': '', 'task4': '',
+            'duration': data.get('timeline', 'TBC'),
+            'team': 'UX/UI Designer, Experience Lead, Delivery Lead, Tech Lead, Frontend Developer, Backend Developer',
+        })
+    return deliverables
+
+def _build_proposal_config(data):
+    budget = data.get('budget', '')
+    total = f'£{int(budget):,}' if str(budget).isdigit() else '£TBC'
+    return {
+        'client_name': data.get('clientName', 'Client'),
+        'project_name': data.get('projectName', 'Project'),
+        'executive_summary': (data.get('briefOutput', '') or '')[:500],
+        'activity_overview': (data.get('requirements', '') or '')[:300],
+        'total_cost': total,
+        'deliverables': _parse_deliverables(data),
+        'assumptions': {'intro': data.get('bgNotes', '') or ''},
+    }
+
+
+def build_proposal_pptx(data, out):
+    template_path = os.path.join(TEMPLATES_DIR, 'cost_proposal_template.pptx')
+    work_dir = tempfile.mkdtemp()
+    try:
+        with zipfile.ZipFile(template_path, 'r') as z:
+            z.extractall(work_dir)
+        slides_dir = os.path.join(work_dir, 'ppt', 'slides')
+        cfg = _build_proposal_config(data)
+        for fname, filler in [
+            ('slide1.xml', _fill_slide1),
+            ('slide2.xml', _fill_slide2),
+            ('slide3.xml', _fill_slide3),
+            ('slide6.xml', _fill_slide6),
+            ('slide8.xml', _fill_slide8),
+        ]:
+            path = os.path.join(slides_dir, fname)
+            xml = open(path, encoding='utf-8').read()
+            open(path, 'w', encoding='utf-8').write(filler(xml, cfg))
+        s5 = os.path.join(slides_dir, 'slide5.xml')
+        open(s5, 'w', encoding='utf-8').write(_fix_slide5(open(s5, encoding='utf-8').read()))
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+            for root, _, files in os.walk(work_dir):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    z.write(fp, os.path.relpath(fp, work_dir))
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+if False:  # old scratch-built pptx code — kept for reference, never runs
     ASSETS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'brand')
     LOGO_PATH   = os.path.join(ASSETS_DIR, 'Logo.png')
     PHOTO_PATHS = [
