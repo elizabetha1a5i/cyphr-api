@@ -2737,13 +2737,13 @@ def proxy_deck():
             location = resp.headers.get('Location')
             if not location:
                 return jsonify({'error': 'Apps Script redirect had no Location header'}), 502
-            resp = requests.post(
-                location,
-                data=json.dumps(body),
-                headers={'Content-Type': 'text/plain'},
-                allow_redirects=True,
-                timeout=60
-            )
+            # 302/303 → follow as GET (HTTP spec); 307/308 → keep POST
+            if resp.status_code in (307, 308):
+                resp = requests.post(location, data=json.dumps(body),
+                                     headers={'Content-Type': 'text/plain'},
+                                     allow_redirects=True, timeout=60)
+            else:
+                resp = requests.get(location, allow_redirects=True, timeout=60)
         if not resp.ok:
             return jsonify({'error': f'Apps Script returned {resp.status_code}: {resp.text[:500]}'}), 502
         try:
