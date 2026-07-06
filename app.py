@@ -2716,6 +2716,30 @@ def ai_flag():
     return jsonify(ai_flags)
 
 
+@app.route('/proxy-deck', methods=['POST', 'OPTIONS'])
+def proxy_deck():
+    if request.method == 'OPTIONS':
+        return '', 204
+    body = request.get_json(force=True, silent=True) or {}
+    apps_script_url = body.pop('deckWebAppUrl', None)
+    if not apps_script_url:
+        return jsonify({'error': 'deckWebAppUrl is required'}), 400
+    try:
+        resp = requests.post(
+            apps_script_url,
+            data=json.dumps(body),
+            headers={'Content-Type': 'text/plain'},
+            allow_redirects=True,
+            timeout=60
+        )
+        resp.raise_for_status()
+        return jsonify(resp.json())
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': str(e)}), 502
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     provider = os.environ.get('AI_PROVIDER', 'anthropic')
