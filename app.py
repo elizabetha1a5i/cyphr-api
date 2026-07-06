@@ -73,7 +73,7 @@ def call_ai(prompt, max_tokens=2000, pdf_path=None):
         return res.json()['choices'][0]['message']['content']
 
     elif provider == 'gemini':
-        key = os.environ.get('GEMINI_API_KEY', '')
+        key = os.environ.get('GEMINI_KEY', '')
         model = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash')
         res = requests.post(
             f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}',
@@ -1453,9 +1453,9 @@ def parse_estimate_phases(text):
             continue
         if current is None:
             continue
-        # Role line: "Role — X days @ £rate/day = £total"
+        # Role line: "Role — X days @ £rate/day = £total" or "Role: X days × £rate/day = £total"
         rm = re.match(
-            r'^(.+?)\s*[—\-]+\s*(\d+\.?\d*)\s*days?\s*@\s*£?([\d,]+)[/\s]*day\s*=?\s*£?([\d,]+)',
+            r'^[-•*\s]*(.+?)\s*(?:[—\-:]+)\s*(\d+\.?\d*)\s*days?\s*(?:@|×|x)\s*£?([\d,]+)[/\s]*day\s*=?\s*£?([\d,]+)',
             line, re.IGNORECASE)
         if rm:
             days = float(rm.group(2))
@@ -2092,7 +2092,22 @@ def build_brief(data, out):
     doc.add_paragraph()
 
     if brief_text:
-        for line in brief_text.strip().split('\n'):
+        # Pre-process: convert markdown table rows into readable lines, strip dividers
+        processed_lines = []
+        for raw_line in brief_text.strip().split('\n'):
+            stripped = raw_line.strip()
+            # Skip markdown divider rows (--- or |---|---|)
+            if re.match(r'^[\|\-\s]+$', stripped) and stripped:
+                continue
+            # Convert markdown table rows (| col | col |) to readable text
+            if stripped.startswith('|') and stripped.endswith('|'):
+                cols = [c.strip() for c in stripped.strip('|').split('|') if c.strip()]
+                if cols:
+                    processed_lines.append('• ' + ' — '.join(cols))
+                continue
+            processed_lines.append(raw_line)
+
+        for line in processed_lines:
             line = line.strip()
             if not line: doc.add_paragraph(); continue
             if line.startswith('##') or (line.startswith('**') and line.endswith('**')) or (line.isupper() and 3 < len(line) < 60):
@@ -2543,9 +2558,9 @@ def gemini_extract(scraped_content, metric, our_metrics, source_url, source_name
     )
     payload = _json.dumps({
         'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1}
+        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1, 'maxOutputTokens': 512}
     }).encode()
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}'
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
     with urllib.request.urlopen(req, timeout=20) as r:
         result = _json.loads(r.read())
@@ -2640,7 +2655,7 @@ def ai_flag():
     if not transcripts:
         return jsonify([])
 
-    gemini_model = 'gemini-2.5-flash'
+    gemini_model = 'gemini-2.0-flash'
 
     tx_block = '\n\n'.join(
         f"--- SESSION {i+1} | ID:{s.get('Session ID','?')} | Date:{s.get('Date','?')} | Mode:{s.get('Mode','?')} ---\n{(s.get('Transcript','') or '')[:3000]}"
@@ -2675,7 +2690,7 @@ def ai_flag():
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}'
     payload = _json.dumps({
         'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1}
+        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1, 'maxOutputTokens': 2048}
     }).encode()
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
     try:
@@ -2706,7 +2721,7 @@ def health():
     provider = os.environ.get('AI_PROVIDER', 'anthropic')
     key_set = bool(
         os.environ.get('ANTHROPIC_API_KEY') or
-        os.environ.get('GEMINI_API_KEY') or
+        os.environ.get('GEMINI_KEY') or
         os.environ.get('OPENAI_API_KEY')
     )
     return jsonify({'status': 'ok', 'provider': provider, 'api_key_set': key_set})
