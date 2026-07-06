@@ -2725,17 +2725,33 @@ def proxy_deck():
     if not apps_script_url:
         return jsonify({'error': 'deckWebAppUrl is required'}), 400
     try:
+        # Apps Script redirects POST → follow manually so the body isn't lost
         resp = requests.post(
             apps_script_url,
             data=json.dumps(body),
             headers={'Content-Type': 'text/plain'},
-            allow_redirects=True,
-            timeout=60
+            allow_redirects=False,
+            timeout=30
         )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get('Location')
+            if not location:
+                return jsonify({'error': 'Apps Script redirect had no Location header'}), 502
+            resp = requests.post(
+                location,
+                data=json.dumps(body),
+                headers={'Content-Type': 'text/plain'},
+                allow_redirects=True,
+                timeout=60
+            )
+        if not resp.ok:
+            return jsonify({'error': f'Apps Script returned {resp.status_code}: {resp.text[:500]}'}), 502
+        try:
+            return jsonify(resp.json())
+        except Exception:
+            return jsonify({'error': f'Apps Script response was not JSON: {resp.text[:500]}'}), 502
     except requests.exceptions.RequestException as e:
-        return jsonify({'error': str(e)}), 502
+        return jsonify({'error': f'Request to Apps Script failed: {str(e)}'}), 502
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
