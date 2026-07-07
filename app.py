@@ -559,7 +559,7 @@ def parse_sow_sections(text):
     current = None
     buf = []
     for line in text.split('\n'):
-        m = re.match(r'^([A-Z][A-Z\s&/]{2,30}):\s*(.*)$', line.strip())
+        m = re.match(r'^([A-Z][A-Za-z\s&/]{2,40}):\s*(.*)$', line.strip())
         if m:
             if current:
                 sections[current] = '\n'.join(buf).strip()
