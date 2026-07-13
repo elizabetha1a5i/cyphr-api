@@ -2560,7 +2560,7 @@ def gemini_extract(scraped_content, metric, our_metrics, source_url, source_name
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1, 'maxOutputTokens': 512}
     }).encode()
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}'
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}'
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
     with urllib.request.urlopen(req, timeout=20) as r:
         result = _json.loads(r.read())
@@ -2655,7 +2655,7 @@ def ai_flag():
     if not transcripts:
         return jsonify([])
 
-    gemini_model = 'gemini-2.0-flash'
+    gemini_model = 'gemini-2.5-flash'
 
     tx_block = '\n\n'.join(
         f"--- SESSION {i+1} | ID:{s.get('Session ID','?')} | Date:{s.get('Date','?')} | Mode:{s.get('Mode','?')} ---\n{(s.get('Transcript','') or '')[:3000]}"
