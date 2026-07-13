@@ -2310,6 +2310,7 @@ def push_snapshot():
 
     data = request.get_json(force=True, silent=True) or {}
     rows = data.get('rows', [])
+    ai_flags = data.get('aiFlags', [])
     if not rows:
         return jsonify({'error': 'No rows provided'}), 400
 
@@ -2317,7 +2318,7 @@ def push_snapshot():
     payload = _json.dumps({
         'files': {
             'blarney-snapshot.json': {
-                'content': _json.dumps(rows)
+                'content': _json.dumps({'rows': rows, 'aiFlags': ai_flags})
             }
         }
     }).encode()
@@ -2416,7 +2417,7 @@ def get_snapshot():
     gist_id = os.environ.get('GIST_ID', '')
     github_token = os.environ.get('GITHUB_TOKEN', '')
     if not gist_id or not github_token:
-        return jsonify([])
+        return jsonify({'rows': [], 'aiFlags': []})
 
     import urllib.request as _ur, json as _json
     req = _ur.Request(
@@ -2431,10 +2432,12 @@ def get_snapshot():
         with _ur.urlopen(req, timeout=10) as resp:
             result = _json.loads(resp.read())
         content = result.get('files', {}).get('blarney-snapshot.json', {}).get('content', '[]')
-        rows = _json.loads(content)
-        return jsonify(rows)
+        parsed = _json.loads(content)
+        if isinstance(parsed, list):
+            return jsonify({'rows': parsed, 'aiFlags': []})
+        return jsonify({'rows': parsed.get('rows', []), 'aiFlags': parsed.get('aiFlags', [])})
     except Exception as e:
-        return jsonify([])
+        return jsonify({'rows': [], 'aiFlags': []})
 
 
 STATIC_BENCHMARKS = [
