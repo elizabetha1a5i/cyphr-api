@@ -2745,23 +2745,29 @@ def ai_flag():
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}'
     payload = _json.dumps({
         'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1, 'maxOutputTokens': 2048}
+        'generationConfig': {
+            'responseMimeType': 'application/json', 'temperature': 0.1, 'maxOutputTokens': 8192,
+            'thinkingConfig': {'thinkingBudget': 0}
+        }
     }).encode()
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = _json.loads(resp.read())
-        raw = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '[]')
+        candidate = result.get('candidates', [{}])[0]
+        raw = candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
         # Strip markdown code fences if model wraps JSON in them
         raw = raw.strip()
         if raw.startswith('```'):
             raw = '\n'.join(raw.split('\n')[1:])
         if raw.endswith('```'):
             raw = raw.rsplit('```', 1)[0]
+        if not raw:
+            return jsonify({'error': f'Gemini returned no output (finishReason: {candidate.get("finishReason")})', 'model': gemini_model}), 502
         try:
             ai_flags = _json.loads(raw)
-        except Exception:
-            ai_flags = []
+        except Exception as parse_err:
+            return jsonify({'error': f'Could not parse Gemini output as JSON ({parse_err}): {raw[:500]}', 'model': gemini_model}), 502
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')
         return jsonify({'error': f'Gemini HTTP {e.code}: {body}', 'model': gemini_model}), 502
