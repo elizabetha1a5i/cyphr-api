@@ -2440,6 +2440,58 @@ def get_snapshot():
         return jsonify({'rows': [], 'aiFlags': []})
 
 
+@app.route('/snapshot-history', methods=['GET'])
+def get_snapshot_history():
+    gist_id = os.environ.get('GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify({'error': 'GIST_ID or GITHUB_TOKEN not configured'}), 500
+
+    import urllib.request as _ur, json as _json
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}/commits',
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        }
+    )
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            commits = _json.loads(resp.read())
+        return jsonify([{'version': c.get('version'), 'committed_at': c.get('committed_at')} for c in commits])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/snapshot-history/<version>', methods=['GET'])
+def get_snapshot_at_version(version):
+    gist_id = os.environ.get('GIST_ID', '')
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    if not gist_id or not github_token:
+        return jsonify({'error': 'GIST_ID or GITHUB_TOKEN not configured'}), 500
+
+    import urllib.request as _ur, json as _json
+    req = _ur.Request(
+        f'https://api.github.com/gists/{gist_id}/{version}',
+        headers={
+            'Authorization': f'Bearer {github_token}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        }
+    )
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            result = _json.loads(resp.read())
+        content = result.get('files', {}).get('blarney-snapshot.json', {}).get('content', '[]')
+        parsed = _json.loads(content)
+        if isinstance(parsed, list):
+            return jsonify({'rows': parsed, 'aiFlags': []})
+        return jsonify({'rows': parsed.get('rows', []), 'aiFlags': parsed.get('aiFlags', [])})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
 STATIC_BENCHMARKS = [
     {'metric': 'conversion_rate',       'benchmark': 4.5,  'label': '3–6%',             'source': 'Forrester Research: The State of Retail Kiosks 2024',        'url': 'https://www.forrester.com/report/the-state-of-retail-kiosks/', 'date': '2024'},
     {'metric': 'engagement_rate',       'benchmark': 35.0, 'label': '30–40%',           'source': 'Gartner: In-Store Digital Touchpoint Benchmark 2024',        'url': 'https://www.gartner.com/en/retail/topics/digital-commerce',   'date': '2024'},
